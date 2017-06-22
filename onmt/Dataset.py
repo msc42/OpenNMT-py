@@ -6,7 +6,6 @@ from torch.autograd import Variable
 
 import onmt
 
-
 class Dataset(object):
     def __init__(self, srcData, tgtData, batchSize, cuda,
                  volatile=False, data_type="text"):
@@ -18,11 +17,45 @@ class Dataset(object):
         else:
             self.tgt = None
         self.cuda = cuda
+        self.fullSize = len(self.src)
 
         self.batchSize = batchSize
-        self.numBatches = math.ceil(len(self.src)/batchSize)
+        #~ self.numBatches = math.ceil(len(self.src)/batchSize)
         self.volatile = volatile
-
+        self.allocateBatch()
+    #~ 
+    #~ # This function sorts the data by length 
+    #~ # Then allocate the mini-batches (grouping sentences with the same size)
+    def allocateBatch(self):
+			
+				# The sentence pairs are sorted by source already (cool)
+				self.batches = []
+				
+				cur_batch = []
+				cur_batch_length = -99
+				
+				for i in xrange(self.fullSize):
+					cur_length = self.src[i].size(0)
+					# if the current batch's length is different
+					# the we create 
+					if cur_batch_length != cur_length:
+						if len(cur_batch) > 0:
+							self.batches.append(cur_batch)
+						cur_batch_length = cur_length
+						cur_batch = []
+						
+					cur_batch.append(i)
+					
+					if len(cur_batch) == self.batchSize:
+						self.batches.append(cur_batch)
+						cur_batch = []
+					
+				# catch the last batch
+				if len(cur_batch) > 0:
+					self.batches.append(cur_batch)
+				
+				self.numBatches = len(self.batches)
+				
     def _batchify(self, data, align_right=False,
                   include_lengths=False, dtype="text"):
         if dtype == "text":
@@ -34,7 +67,7 @@ class Dataset(object):
                 offset = max_length - data_length if align_right else 0
                 out[i].narrow(0, offset, data_length).copy_(data[i])
             if include_lengths:
-                return out, lengths
+                return out, lengths 
             else:
                 return out
         elif dtype == "img":
@@ -51,17 +84,22 @@ class Dataset(object):
                 width_offset = max_width - data_width if align_right else 0
                 out[i].narrow(1, height_offset, data_height) \
                       .narrow(2, width_offset, data_width).copy_(data[i])
-            return out, widths
-
+            return out, widths			
+				
+				
     def __getitem__(self, index):
         assert index < self.numBatches, "%d > %d" % (index, self.numBatches)
+        
+        batch = self.batches[index]
+        srcData = [self.src[i] for i in batch]
         srcBatch, lengths = self._batchify(
-            self.src[index*self.batchSize:(index+1)*self.batchSize],
+            srcData,
             align_right=False, include_lengths=True, dtype=self._type)
-
+		
         if self.tgt:
-            tgtBatch = self._batchify(
-                self.tgt[index*self.batchSize:(index+1)*self.batchSize],
+					tgtData = [self.tgt[i] for i in batch]
+					tgtBatch = self._batchify(
+                tgtData,
                 dtype="text")
         else:
             tgtBatch = None
@@ -75,6 +113,16 @@ class Dataset(object):
             indices, srcBatch = zip(*batch)
         else:
             indices, srcBatch, tgtBatch = zip(*batch)
+        
+        #~ srcMask = torch.ByteTensor(self.batchSize, lengths[0]).zero_().add(1)
+        #~ for b in xrange(self.batchSize):
+					#~ for t in xrange(lengths[b]):
+						#~ srcMask[b][t] = 0
+#~ 
+        #~ srcMask = Variable(srcMask, volatile=self.volatile)
+        #~ print(srcMask)
+        #~ if self.cuda:
+					#~ srcMask = srcMask.cuda()
 
         def wrap(b, dtype="text"):
             if b is None:
@@ -90,8 +138,13 @@ class Dataset(object):
         # wrap lengths in a Variable to properly split it in DataParallel
         lengths = torch.LongTensor(lengths).view(1, -1)
         lengths = Variable(lengths, volatile=self.volatile)
-        return (wrap(srcBatch, self._type), lengths), \
-            wrap(tgtBatch, "text"), indices
+        
+        srcTensor = wrap(srcBatch, self._type)
+        tgtTensor = wrap(tgtBatch, "text")
+        
+        
+        return (srcTensor, lengths), \
+            tgtTensor, indices
 
     def __len__(self):
         return self.numBatches
