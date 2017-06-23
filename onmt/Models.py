@@ -16,18 +16,21 @@ class Encoder(nn.Module):
         input_size = opt.word_vec_size
 
         super(Encoder, self).__init__()
-        self.word_lut = nn.Embedding(dicts.size(),
-                                     opt.word_vec_size,
-                                     padding_idx=onmt.Constants.PAD)
+        #~ self.word_lut = nn.Embedding(dicts.size(),
+                                     #~ opt.word_vec_size,
+                                     #~ padding_idx=onmt.Constants.PAD)
+                                     
+        self.word_lut = onmt.modules.MultiWordEmbedding(opt, dicts)
+        
         self.rnn = nn.LSTM(input_size, self.hidden_size,
                            num_layers=opt.layers,
                            dropout=opt.dropout,
                            bidirectional=opt.brnn)
 
-    def load_pretrained_vectors(self, opt):
-        if opt.pre_word_vecs_enc is not None:
-            pretrained = torch.load(opt.pre_word_vecs_enc)
-            self.word_lut.weight.data.copy_(pretrained)
+    #~ def load_pretrained_vectors(self, opt):
+        #~ if opt.pre_word_vecs_enc is not None:
+            #~ pretrained = torch.load(opt.pre_word_vecs_enc)
+            #~ self.word_lut.weight.data.copy_(pretrained)
 
     def forward(self, input, hidden=None):
         if isinstance(input, tuple):
@@ -40,6 +43,10 @@ class Encoder(nn.Module):
         if isinstance(input, tuple):
             outputs = unpack(outputs)[0]
         return hidden_t, outputs
+        
+    def switchID(self, srcID):
+				
+				self.word_lut.switchID(srcID)
 
 
 class StackedLSTM(nn.Module):
@@ -80,9 +87,7 @@ class Decoder(nn.Module):
             input_size += opt.rnn_size
 
         super(Decoder, self).__init__()
-        self.word_lut = nn.Embedding(dicts.size(),
-                                     opt.word_vec_size,
-                                     padding_idx=onmt.Constants.PAD)
+        self.word_lut = onmt.modules.MultiWordEmbedding(opt, dicts)
         self.rnn = StackedLSTM(opt.layers, input_size,
                                opt.rnn_size, opt.dropout)
         self.attn = onmt.modules.GlobalAttention(opt.rnn_size)
@@ -90,10 +95,10 @@ class Decoder(nn.Module):
 
         self.hidden_size = opt.rnn_size
 
-    def load_pretrained_vectors(self, opt):
-        if opt.pre_word_vecs_dec is not None:
-            pretrained = torch.load(opt.pre_word_vecs_dec)
-            self.word_lut.weight.data.copy_(pretrained)
+    #~ def load_pretrained_vectors(self, opt):
+        #~ if opt.pre_word_vecs_dec is not None:
+            #~ pretrained = torch.load(opt.pre_word_vecs_dec)
+            #~ self.word_lut.weight.data.copy_(pretrained)
 
     def forward(self, input, hidden, context, init_output):
         emb = self.word_lut(input)
@@ -115,6 +120,11 @@ class Decoder(nn.Module):
 
         outputs = torch.stack(outputs)
         return outputs, hidden, attn
+        
+    
+    def switchID(self, tgtID):
+				
+				self.word_lut.switchID(tgtID)
 
 
 class NMTModel(nn.Module):
@@ -152,3 +162,38 @@ class NMTModel(nn.Module):
                                               context, init_output)
 
         return out
+        
+    def switchLangID(self, srcID, tgtID):
+				
+				self.encoder.switchID(srcID)
+				self.decoder.switchID(tgtID)
+				self.generator.switchID(tgtID)
+
+
+class Generator(nn.Module):
+	
+	def __init__(self, opt, dicts):
+		
+		super(Generator, self).__init__()
+		
+		inputSize = opt.rnn_size
+		self.inputSizes = [] 
+		self.outputSizes = []
+		
+		for i in dicts:
+			vocabSize = dicts[i].size()
+			self.outputSizes.append(vocabSize)
+			self.inputSizes.append(inputSize)
+			
+		self.linear = onmt.modules.MultiLinear(self.inputSizes, self.outputSizes)
+		self.lsm = nn.LogSoftmax()
+							
+	def forward(self, input):
+		
+		output = self.lsm(self.linear(input))
+		return output
+		
+	
+	def switchID(self, tgtID):
+		
+		self.linear.switchID(tgtID)

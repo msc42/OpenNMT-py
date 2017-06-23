@@ -2,13 +2,8 @@ import onmt
 import onmt.Markdown
 import argparse
 import torch
-
-
-def loadImageLibs():
-    "Conditional import of torch image libs."
-    global Image, transforms
-    from PIL import Image
-    from torchvision import transforms
+import os.path
+from collections import OrderedDict
 
 
 parser = argparse.ArgumentParser(description='preprocess.py')
@@ -20,8 +15,6 @@ parser.add_argument('-config',    help="Read options from this file")
 
 parser.add_argument('-src_type', default="text",
                     help="Type of the source input. Options are [text|img].")
-parser.add_argument('-src_img_dir', default=".",
-                    help="Location of source images")
 
 
 parser.add_argument('-train_src', required=True,
@@ -32,18 +25,23 @@ parser.add_argument('-valid_src', required=True,
                     help="Path to the validation source data")
 parser.add_argument('-valid_tgt', required=True,
                     help="Path to the validation target data")
+parser.add_argument('-src_langs', required=True,
+                    help="Path to the validation target data")
+parser.add_argument('-tgt_langs', required=True,
+                    help="Path to the validation target data")
 
 parser.add_argument('-save_data', required=True,
                     help="Output file for the prepared data")
 
-parser.add_argument('-src_vocab_size', type=int, default=50000,
+parser.add_argument('-vocab_size', type=int, default=50000,
                     help="Size of the source vocabulary")
-parser.add_argument('-tgt_vocab_size', type=int, default=50000,
-                    help="Size of the target vocabulary")
-parser.add_argument('-src_vocab',
-                    help="Path to an existing source vocabulary")
-parser.add_argument('-tgt_vocab',
-                    help="Path to an existing target vocabulary")
+#~ parser.add_argument('-tgt_vocab_size', type=int, default=50000,
+                    #~ help="Size of the target vocabulary")
+parser.add_argument('-vocab',
+                    help="The prefix to vocab file, will be concatenated with the language. \
+												  For example: vocab.en")
+#~ parser.add_argument('-tgt_vocab',
+                    #~ help="Path to an existing target vocabulary")
 
 parser.add_argument('-src_seq_length', type=int, default=50,
                     help="Maximum source sequence length")
@@ -69,16 +67,22 @@ opt = parser.parse_args()
 torch.manual_seed(opt.seed)
 
 
-def makeVocabulary(filename, size):
+def makeVocabulary(filenames, size):
     vocab = onmt.Dict([onmt.Constants.PAD_WORD, onmt.Constants.UNK_WORD,
                        onmt.Constants.BOS_WORD, onmt.Constants.EOS_WORD],
                       lower=opt.lower)
-
-    with open(filename) as f:
-        for sent in f.readlines():
-            for word in sent.split():
-                vocab.add(word)
-
+                      
+    for filename in filenames:
+			print("Reading file " + filename)
+			with open(filename) as f:
+				for sent in f.readlines():
+					for word in sent.split():
+						vocab.add(word)
+    #~ with open(filename) as f:
+        #~ for sent in f.readlines():
+            #~ for word in sent.split():
+                #~ vocab.add(word)
+#~ 
     originalSize = vocab.size()
     vocab = vocab.prune(size)
     print('Created dictionary of size %d (pruned from %d)' %
@@ -87,24 +91,25 @@ def makeVocabulary(filename, size):
     return vocab
 
 
-def initVocabulary(name, dataFile, vocabFile, vocabSize):
+def initVocabulary(name, dataFiles, vocabFile, vocabSize):
 
     vocab = None
     if vocabFile is not None:
+				vocabFile = vocabFile + "." + name
+				if os.path.isfile(vocabFile):
         # If given, load existing word dictionary.
-        print('Reading ' + name + ' vocabulary from \'' + vocabFile + '\'...')
-        vocab = onmt.Dict()
-        vocab.loadFile(vocabFile)
-        print('Loaded ' + str(vocab.size()) + ' ' + name + ' words')
+					print('Reading ' + name + ' vocabulary from \'' + vocabFile + '\'...')
+					vocab = onmt.Dict()
+					vocab.loadFile(vocabFile)
+					print('Loaded ' + str(vocab.size()) + ' ' + name + ' words')
 
     if vocab is None:
         # If a dictionary is still missing, generate it.
         print('Building ' + name + ' vocabulary...')
-        genWordVocab = makeVocabulary(dataFile, vocabSize)
-
+        genWordVocab = makeVocabulary(dataFiles, vocabSize)
         vocab = genWordVocab
 
-    print()
+    print("Done")
     return vocab
 
 
@@ -200,37 +205,109 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts):
 
 def main():
 
-    dicts = {}
-    dicts['src'] = onmt.Dict()
-    if opt.src_type == "text":
-        dicts['src'] = initVocabulary('source', opt.train_src, opt.src_vocab,
-                                      opt.src_vocab_size)
+		dicts = {}
+    # First, we need to build the vocabularies
+		srcLangs = opt.src_langs.split("|")
+		tgtLangs = opt.tgt_langs.split("|")
+		
+		srcFiles = opt.train_src.split("|")
+		tgtFiles = opt.train_tgt.split("|")
+		validSrcFiles = opt.valid_src.split("|")
+		validTgtFiles = opt.valid_tgt.split("|")
+		
+		# Sanity checks
+		assert len(srcLangs) == len(tgtLangs)
+		assert len(srcLangs) == len(srcFiles)
+		assert len(srcFiles) == len(tgtFiles)
+		
+		langs = []
+		
+		for lang in srcLangs + tgtLangs:
+			if not lang in langs:
+				langs.append(lang)
+		
+		dicts['langs'] = langs
+		dicts['vocabs'] = dict()
+		dicts['nSets'] = len(srcLangs)
+		uniqSrcLangs = list(OrderedDict.fromkeys(srcLangs))
+		uniqTgtLangs = list(OrderedDict.fromkeys(tgtLangs))
+		print(uniqSrcLangs, uniqTgtLangs)
+		
+		for lang in langs:
+			if lang not in dicts['vocabs']:
+				dataFilesWithLang = []
+				for i in range(len(srcFiles)):
+					if srcLangs[i] == lang:
+						dataFilesWithLang.append(srcFiles[i])
+					if tgtLangs[i] == lang:
+						dataFilesWithLang.append(tgtFiles[i])
+				
+				dicts['vocabs'][lang] = initVocabulary(lang, dataFilesWithLang, 
+																										 opt.vocab, opt.vocab_size)
+				#~ print(dataFilesWithLang)
+		
+		# store the actual dictionaries for each side
+		dicts['src'] = dict()
+		dicts['tgt'] = dict()
 
-    dicts['tgt'] = initVocabulary('target', opt.train_tgt, opt.tgt_vocab,
-                                  opt.tgt_vocab_size)
-
-    print('Preparing training ...')
-    train = {}
-    train['src'], train['tgt'] = makeData(opt.train_src, opt.train_tgt,
-                                          dicts['src'], dicts['tgt'])
-
-    print('Preparing validation ...')
-    valid = {}
-    valid['src'], valid['tgt'] = makeData(opt.valid_src, opt.valid_tgt,
-                                          dicts['src'], dicts['tgt'])
-
-    if opt.src_vocab is None:
-        saveVocabulary('source', dicts['src'], opt.save_data + '.src.dict')
-    if opt.tgt_vocab is None:
-        saveVocabulary('target', dicts['tgt'], opt.save_data + '.tgt.dict')
-
-    print('Saving data to \'' + opt.save_data + '.train.pt\'...')
-    save_data = {'dicts': dicts,
+		train = {}
+		train['src'] = list()
+		train['tgt'] = list()
+		dicts['setIDs'] = list()
+		
+		valid = {}
+		valid['src'] = list()
+		valid['tgt'] = list()
+    
+		for i in range(dicts['nSets']):
+			#~ dicts['src'].append(dicts['langs'].index(srcLangs[i]))
+			#~ dicts['tgt'].append(dicts['langs'].index(tgtLangs[i]))
+			
+			
+			
+			dicts['setIDs'].append([uniqSrcLangs.index(srcLangs[i]), uniqTgtLangs.index(tgtLangs[i])])
+			
+			srcID = dicts['setIDs'][i][0]
+			tgtID = dicts['setIDs'][i][1]
+			
+			if srcID not in dicts['src']:
+				dicts['src'][srcID] = dicts['vocabs'][srcLangs[i]]
+			if tgtID not in dicts['tgt']:
+				dicts['tgt'][tgtID] = dicts['vocabs'][tgtLangs[i]]
+			
+			srcDict = dicts['vocabs'][srcLangs[i]]
+			tgtDict = dicts['vocabs'][tgtLangs[i]]
+			
+			print('Preparing training ... for set %d ' % i)
+			srcSet, tgtSet = makeData(srcFiles[i], tgtFiles[i], 
+																									 srcDict, tgtDict)
+			train['src'].append(srcSet)
+			train['tgt'].append(tgtSet)
+			
+			print('Preparing validation ... for set %d ' % i)
+			
+			validSrcSet, validTgtSet = makeData(validSrcFiles[i], validTgtFiles[i],
+																									 srcDict, tgtDict)
+																									 
+			valid['src'].append(validSrcSet)
+			valid['tgt'].append(validTgtSet)
+			
+			
+		if opt.vocab is None:
+			print('Saving vocabularies ... ')
+			for lang in langs:
+				saveVocabulary(lang, dicts['vocabs'][lang], opt.save_data + '.dict.' + lang)
+			print('Done')
+		
+		print('Saving data to \'' + opt.save_data + '.train.pt\'...')
+		save_data = {'dicts': dicts,
                  'type':  opt.src_type,
                  'train': train,
                  'valid': valid}
-    torch.save(save_data, opt.save_data + '.train.pt')
-
+		
+		torch.save(save_data, opt.save_data + '.train.pt')
+		print('Finished.')
+		
 
 if __name__ == "__main__":
     main()

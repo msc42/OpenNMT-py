@@ -30,8 +30,9 @@ class Optim(object):
     def step(self):
         "Compute gradients norm."
         if self.max_grad_norm:
-            clip_grad_norm(self.params, self.max_grad_norm)
+            total_norm = clip_grad_norm(self.params, self.max_grad_norm)
         self.optimizer.step()
+        return total_norm
 
     def updateLearningRate(self, ppl, epoch):
         """
