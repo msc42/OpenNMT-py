@@ -86,7 +86,7 @@ parser.add_argument('-learning_rate', type=float, default=1.0,
                     used, then this is the global learning rate. Recommended
                     settings: sgd = 1, adagrad = 0.1,
                     adadelta = 1, adam = 0.001""")
-parser.add_argument('-learning_rate_decay', type=float, default=0.5,
+parser.add_argument('-learning_rate_decay', type=float, default=1,
                     help="""If update_learning_rate, decay learning rate by
                     this much if (i) perplexity does not decrease on the
                     validation set or (ii) epoch has gone past
@@ -109,9 +109,13 @@ parser.add_argument('-pre_word_vecs_dec',
 # GPU
 parser.add_argument('-gpus', default=[], nargs='+', type=int,
                     help="Use CUDA on the listed devices.")
+parser.add_argument('-seed', default=9999, nargs='+', type=int,
+                    help="Seed for deterministic runs.")
 
-parser.add_argument('-log_interval', type=int, default=50,
+parser.add_argument('-log_interval', type=int, default=100,
                     help="Print stats at this interval.")
+parser.add_argument('-save_every', type=int, default=-1,
+                    help="Save every this interval.")
 
 opt = parser.parse_args()
 
@@ -123,6 +127,7 @@ if torch.cuda.is_available() and not opt.gpus:
 if opt.gpus:
     cuda.set_device(opt.gpus[0])
 
+torch.manual_seed(opt.seed)
 
 def NMTCriterion(vocabSize):
     weight = torch.ones(vocabSize)
@@ -135,7 +140,7 @@ def NMTCriterion(vocabSize):
 
 def memoryEfficientLoss(outputs, targets, generator, crit, eval=False):
     # compute generations one piece at a time
-    num_correct, loss = 0, 0
+    loss = 0
     outputs = Variable(outputs.data, requires_grad=(not eval), volatile=eval)
 
     batch_size = outputs.size(1)
@@ -145,24 +150,18 @@ def memoryEfficientLoss(outputs, targets, generator, crit, eval=False):
         out_t = out_t.view(-1, out_t.size(2))
         scores_t = generator(out_t)
         loss_t = crit(scores_t, targ_t.view(-1))
-        pred_t = scores_t.max(1)[1]
-        num_correct_t = pred_t.data.eq(targ_t.data) \
-                                   .masked_select(
-                                       targ_t.ne(onmt.Constants.PAD).data) \
-                                   .sum()
-        num_correct += num_correct_t
         loss += loss_t.data[0]
         if not eval:
             loss_t.div(batch_size).backward()
 
     grad_output = None if outputs.grad is None else outputs.grad.data
-    return loss, grad_output, num_correct
+    return loss, grad_output
 
 
 def eval(model, criterion, data):
     total_loss = 0
     total_words = 0
-    total_num_correct = 0
+    
 
     model.eval()
     for i in range(len(data)):
@@ -171,14 +170,13 @@ def eval(model, criterion, data):
         outputs = model(batch)
         # exclude <s> from targets
         targets = batch[1][1:]
-        loss, _, num_correct = memoryEfficientLoss(
+        loss, _ = memoryEfficientLoss(
                 outputs, targets, model.generator, criterion, eval=True)
         total_loss += loss
-        total_num_correct += num_correct
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
 
     model.train()
-    return total_loss / total_words, total_num_correct / total_words
+    return total_loss / total_words
 
 
 def trainModel(model, trainData, validData, dataset, optim):
@@ -190,19 +188,22 @@ def trainModel(model, trainData, validData, dataset, optim):
 
     start_time = time.time()
 
-    def trainEpoch(epoch):
+    def trainEpoch(epoch, batchOrder=None):
 
         if opt.extra_shuffle and epoch > opt.curriculum:
             trainData.shuffle()
 
         # Shuffle mini batch order.
-        batchOrder = torch.randperm(len(trainData))
+        
+        if not batchOrder:
+					batchOrder = torch.randperm(len(trainData))
 
-        total_loss, total_words, total_num_correct = 0, 0, 0
+        total_loss, total_words = 0, 0
         report_loss, report_tgt_words = 0, 0
-        report_src_words, report_num_correct = 0, 0
+        report_src_words = 0
         start = time.time()
-        for i in range(len(trainData)):
+        nSamples = len(trainData)
+        for i in range(nSamples):
 
             batchIdx = batchOrder[i] if epoch > opt.curriculum else i
             # Exclude original indices.
@@ -212,7 +213,7 @@ def trainModel(model, trainData, validData, dataset, optim):
             outputs = model(batch)
             # Exclude <s> from targets.
             targets = batch[1][1:]
-            loss, gradOutput, num_correct = memoryEfficientLoss(
+            loss, gradOutput = memoryEfficientLoss(
                     outputs, targets, model.generator, criterion)
 
             outputs.backward(gradOutput)
@@ -222,42 +223,85 @@ def trainModel(model, trainData, validData, dataset, optim):
 
             num_words = targets.data.ne(onmt.Constants.PAD).sum()
             report_loss += loss
-            report_num_correct += num_correct
             report_tgt_words += num_words
             report_src_words += batch[0][1].data.sum()
             total_loss += loss
-            total_num_correct += num_correct
             total_words += num_words
-            if i % opt.log_interval == -1 % opt.log_interval:
-                print(("Epoch %2d, %5d/%5d; acc: %6.2f; ppl: %6.2f;" +
+            
+            
+        
+
+            
+            
+            if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
+                print(("Epoch %2d, %5d/%5d; ; ppl: %6.2f;" +
                        "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
                       (epoch, i+1, len(trainData),
-                       report_num_correct / report_tgt_words * 100,
+                       
                        math.exp(report_loss / report_tgt_words),
                        report_src_words/(time.time()-start),
                        report_tgt_words/(time.time()-start),
                        time.time()-start_time))
 
                 report_loss, report_tgt_words = 0, 0
-                report_src_words, report_num_correct = 0, 0
+                report_src_words = 0
                 start = time.time()
-
-        return total_loss / total_words, total_num_correct / total_words
+            
+            if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
+							valid_loss = eval(model, criterion, validData)
+							valid_ppl = math.exp(min(valid_loss, 100))
+							print('Validation perplexity: %g' % valid_ppl)
+							
+							
+							model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
+                            else model.state_dict())
+							model_state_dict = {k: v for k, v in model_state_dict.items()
+																	if 'generator' not in k}
+							generator_state_dict = (model.generator.module.state_dict()
+																			if len(opt.gpus) > 1
+																			else model.generator.state_dict())
+							checkpoint = {
+									'model': model_state_dict,
+									'generator': generator_state_dict,
+									'dicts': dataset['dicts'],
+									'opt': opt,
+									'epoch': epoch,
+									'iteration' : -1,
+									'batchOrder' : None,
+									'optim': optim
+							}
+							#  drop a checkpoint
+							ep = float(epoch) - 1 + (i + 1) / nSamples
+							checkpoint = {
+									'model': model_state_dict,
+									'generator': generator_state_dict,
+									'dicts': dataset['dicts'],
+									'opt': opt,
+									'epoch': ep,
+									'iteration' : i,
+									'batchOrder' : batchOrder,
+									'optim': optim
+							}
+							
+							file_name = '%s_ppl_%.2f_e%.2f.pt'
+							print('Writing to %s_ppl_%.2f_e%.2f.pt' % (opt.save_model, valid_ppl, ep))
+							torch.save(checkpoint,
+												 file_name
+												 % (opt.save_model, valid_ppl, epoch))
+        return total_loss / total_words
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         print('')
 
         #  (1) train for one epoch on the training set
-        train_loss, train_acc = trainEpoch(epoch)
+        train_loss = trainEpoch(epoch)
         train_ppl = math.exp(min(train_loss, 100))
         print('Train perplexity: %g' % train_ppl)
-        print('Train accuracy: %g' % (train_acc*100))
 
         #  (2) evaluate on the validation set
-        valid_loss, valid_acc = eval(model, criterion, validData)
+        valid_loss = eval(model, criterion, validData)
         valid_ppl = math.exp(min(valid_loss, 100))
         print('Validation perplexity: %g' % valid_ppl)
-        print('Validation accuracy: %g' % (valid_acc*100))
 
         #  (3) update the learning rate
         optim.updateLearningRate(valid_ppl, epoch)
@@ -276,17 +320,23 @@ def trainModel(model, trainData, validData, dataset, optim):
             'dicts': dataset['dicts'],
             'opt': opt,
             'epoch': epoch,
+            'iteration' : -1,
+            'batchOrder' : None,
             'optim': optim
         }
+        
+			
+        print('Writing to %s_ppl_%.2f_e%d.pt' % (opt.save_model, valid_ppl, epoch))
         torch.save(checkpoint,
-                   '%s_acc_%.2f_ppl_%.2f_e%d.pt'
-                   % (opt.save_model, 100*valid_acc, valid_ppl, epoch))
+                   '%s_ppl_%.2f_e%d.pt' 
+                   % (opt.save_model, valid_ppl, epoch))
 
 
 def main():
     print("Loading data from '%s'" % opt.data)
 
     dataset = torch.load(opt.data)
+    print("Done")
     dict_checkpoint = (opt.train_from if opt.train_from
                        else opt.train_from_state_dict)
     if dict_checkpoint:

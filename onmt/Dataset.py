@@ -8,7 +8,7 @@ import onmt
 
 class Dataset(object):
     def __init__(self, srcData, tgtData, batchSize, cuda,
-                 volatile=False, data_type="text"):
+                 volatile=False, data_type="text", balance=True):
         self.src = srcData
         self._type = data_type
         if tgtData:
@@ -22,10 +22,15 @@ class Dataset(object):
         self.batchSize = batchSize
         #~ self.numBatches = math.ceil(len(self.src)/batchSize)
         self.volatile = volatile
-        self.allocateBatch()
-    #~ 
-    #~ # This function sorts the data by length 
-    #~ # Then allocate the mini-batches (grouping sentences with the same size)
+        
+        self.balance = balance
+        
+        if self.balance:
+					self.allocateBatch()
+        else:
+					self.numBatches = math.ceil(len(self.src)/batchSize)
+
+    #~ # This function allocates the mini-batches (grouping sentences with the same size)
     def allocateBatch(self):
 			
 				# The sentence pairs are sorted by source already (cool)
@@ -90,19 +95,31 @@ class Dataset(object):
     def __getitem__(self, index):
         assert index < self.numBatches, "%d > %d" % (index, self.numBatches)
         
-        batch = self.batches[index]
-        srcData = [self.src[i] for i in batch]
-        srcBatch, lengths = self._batchify(
-            srcData,
-            align_right=False, include_lengths=True, dtype=self._type)
-		
-        if self.tgt:
-					tgtData = [self.tgt[i] for i in batch]
-					tgtBatch = self._batchify(
-                tgtData,
-                dtype="text")
+        if self.balance:
+					batch = self.batches[index]
+					srcData = [self.src[i] for i in batch]
+					srcBatch, lengths = self._batchify(
+							srcData,
+							align_right=False, include_lengths=True, dtype=self._type)
+			
+					if self.tgt:
+						tgtData = [self.tgt[i] for i in batch]
+						tgtBatch = self._batchify(
+									tgtData,
+									dtype="text")
+					else:
+							tgtBatch = None
         else:
-            tgtBatch = None
+					srcBatch, lengths = self._batchify(
+            self.src[index*self.batchSize:(index+1)*self.batchSize],
+            align_right=False, include_lengths=True, dtype=self._type)
+
+					if self.tgt:
+							tgtBatch = self._batchify(
+									self.tgt[index*self.batchSize:(index+1)*self.batchSize],
+									dtype="text")
+					else:
+							tgtBatch = None  
 
         # within batch sorting by decreasing length for variable length rnns
         indices = range(len(srcBatch))
@@ -113,16 +130,6 @@ class Dataset(object):
             indices, srcBatch = zip(*batch)
         else:
             indices, srcBatch, tgtBatch = zip(*batch)
-        
-        #~ srcMask = torch.ByteTensor(self.batchSize, lengths[0]).zero_().add(1)
-        #~ for b in xrange(self.batchSize):
-					#~ for t in xrange(lengths[b]):
-						#~ srcMask[b][t] = 0
-#~ 
-        #~ srcMask = Variable(srcMask, volatile=self.volatile)
-        #~ print(srcMask)
-        #~ if self.cuda:
-					#~ srcMask = srcMask.cuda()
 
         def wrap(b, dtype="text"):
             if b is None:

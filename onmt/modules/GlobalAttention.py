@@ -27,14 +27,18 @@ import torch.nn as nn
 class GlobalAttention(nn.Module):
     def __init__(self, dim):
         super(GlobalAttention, self).__init__()
-        self.linear_in = nn.Linear(dim, dim, bias=True)
-        self.linear_context = nn.Linear(dim, dim, bias=True)
+        self.linear_in = nn.Linear(dim, dim, bias=False)
+        self.linear_context = nn.Linear(dim, dim, bias=False)
         self.sm = nn.Softmax()
         self.linear_out = nn.Linear(dim*2, dim, bias=False)
-        self.linear_to_one = nn.Linear(dim, 1, bias=False)
+        self.linear_to_one = nn.Linear(dim, 1, bias=True)
         self.tanh = nn.Tanh()
         self.mlp_tanh = nn.Tanh()
         self.mask = None
+        
+        # For context gate
+        self.linear_cg = nn.Linear(dim*2, dim, bias=True)
+        self.sigmoid_cg = nn.Sigmoid()
 
     def applyMask(self, mask):
         self.mask = mask
@@ -80,8 +84,17 @@ class GlobalAttention(nn.Module):
 
         weightedContext = torch.bmm(attn3, context).squeeze(1)  # batch x dim
         contextCombined = torch.cat((weightedContext, input), 1)
+        
+        #ContextGate
+        contextGate = self.sigmoid_cg(self.linear_cg(contextCombined))
+        inputGate = 1 - contextGate
+        
+        gatedContext = weightedContext * contextGate
+        gatedInput = input * inputGate
+        gatedContextCombined = torch.cat((gatedContext, gatedInput), 1)
+        
 
-        contextOutput = self.tanh(self.linear_out(contextCombined))
+        contextOutput = self.tanh(self.linear_out(gatedContextCombined))
 
         return contextOutput, attn
 

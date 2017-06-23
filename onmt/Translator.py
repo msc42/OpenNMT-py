@@ -87,7 +87,7 @@ class Translator(object):
 
         return onmt.Dataset(srcData, tgtData, self.opt.batch_size,
                             self.opt.cuda, volatile=True,
-                            data_type=self._type)
+                            data_type=self._type, balance=False)
 
     def buildTargetTokens(self, pred, src, attn):
         tokens = self.tgt_dict.convertToLabels(pred, onmt.Constants.EOS)

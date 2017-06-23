@@ -44,7 +44,10 @@ parser.add_argument('-dump_beam', type=str, default="",
 parser.add_argument('-n_best', type=int, default=1,
                     help="""If verbose is set, will output the n_best
                     decoded sentences""")
-
+parser.add_argument('-print_nbest', action='store_true',
+                    help='Output the n-best list instead of a single sentence')
+parser.add_argument('-normalize', action='store_true',
+                    help='To normalize the scores based on output length')
 parser.add_argument('-gpu', type=int, default=-1,
                     help="Device to run on")
 
@@ -66,7 +69,10 @@ def main():
     opt.cuda = opt.gpu > -1
     if opt.cuda:
         torch.cuda.set_device(opt.gpu)
-
+    
+    # Always pick n_best
+    opt.n_best = opt.beam_size
+		
     translator = onmt.Translator(opt)
 
     outF = open(opt.output, 'w')
@@ -105,19 +111,46 @@ def main():
         if tgtF is not None:
             goldScoreTotal += sum(goldScore)
             goldWordsTotal += sum(len(x) for x in tgtBatch)
+            
+        
+        
+        #~ scores = torch.Tensor(len(predBatch)
+        
+        #~ for b in range(len(predBatch)):
+					#~ scores[b] = predScore[b]
+					
+					#~ if opt.normalize:
+						#~ scores[b] = scores[b] / (len(predBatch[b][0]) + 1)
 
         for b in range(len(predBatch)):
+						# Pred Batch always have n-best outputs  
+            scores = torch.Tensor(len(predBatch[b]))
+            for n in range(opt.n_best):
+							scores[n] = predScore[b][n]
+							if opt.normalize:
+								scores[n] = scores[n] / ( len(predBatch[b][n]) + 1)
+						
+            sorted_scores, sorted_index = torch.sort(scores, 0, True)
+            bestSent = predBatch[b][sorted_index[0]]
+            bestIndex = sorted_index[0]
             count += 1
-            outF.write(" ".join(predBatch[b][0]) + '\n')
-            outF.flush()
+						# Best sentence = having highest log prob
+            
+            
+						
+            
+            
+            if not opt.print_nbest:
+							outF.write(" ".join(bestSent) + '\n')
+							outF.flush()
 
             if opt.verbose:
                 srcSent = ' '.join(srcBatch[b])
                 if translator.tgt_dict.lower:
                     srcSent = srcSent.lower()
                 print('SENT %d: %s' % (count, srcSent))
-                print('PRED %d: %s' % (count, " ".join(predBatch[b][0])))
-                print("PRED SCORE: %.4f" % predScore[b][0])
+                print('PRED %d: %s' % (count, " ".join(bestSent)))
+                print("PRED SCORE: %.4f" %  sorted_scores[0])
 
                 if tgtF is not None:
                     tgtSent = ' '.join(tgtBatch[b])
@@ -126,11 +159,12 @@ def main():
                     print('GOLD %d: %s ' % (count, tgtSent))
                     print("GOLD SCORE: %.4f" % goldScore[b])
 
-                if opt.n_best > 1:
-                    print('\nBEST HYP:')
-                    for n in range(opt.n_best):
-                        print("[%.4f] %s" % (predScore[b][n],
-                                             " ".join(predBatch[b][n])))
+                #~ if opt.n_best > 1:
+                    #~ print('\nBEST HYP:')
+                    #~ for n in range(opt.n_best):
+												#~ idx = sorted_index[n]
+												#~ print("[%.4f] %s" % (predScore[b][idx],
+                                             #~ " ".join(predBatch[b][idx])))
 
                 print('')
 
