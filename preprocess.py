@@ -229,8 +229,12 @@ def main():
 		dicts['langs'] = langs
 		dicts['vocabs'] = dict()
 		dicts['nSets'] = len(srcLangs)
+		
 		uniqSrcLangs = list(OrderedDict.fromkeys(srcLangs))
 		uniqTgtLangs = list(OrderedDict.fromkeys(tgtLangs))
+		
+		dicts['srcLangs'] = srcLangs
+		dicts['tgtLangs'] = tgtLangs
 		print(uniqSrcLangs, uniqTgtLangs)
 		
 		for lang in langs:
@@ -241,8 +245,11 @@ def main():
 						dataFilesWithLang.append(srcFiles[i])
 					if tgtLangs[i] == lang:
 						dataFilesWithLang.append(tgtFiles[i])
+						
+				# We need to remove duplicate of this list 
 				
-				dicts['vocabs'][lang] = initVocabulary(lang, dataFilesWithLang, 
+				sortedDataFiles = list(OrderedDict.fromkeys(dataFilesWithLang))
+				dicts['vocabs'][lang] = initVocabulary(lang, sortedDataFiles, 
 																										 opt.vocab, opt.vocab_size)
 				#~ print(dataFilesWithLang)
 		
@@ -260,10 +267,6 @@ def main():
 		valid['tgt'] = list()
     
 		for i in range(dicts['nSets']):
-			#~ dicts['src'].append(dicts['langs'].index(srcLangs[i]))
-			#~ dicts['tgt'].append(dicts['langs'].index(tgtLangs[i]))
-			
-			
 			
 			dicts['setIDs'].append([uniqSrcLangs.index(srcLangs[i]), uniqTgtLangs.index(tgtLangs[i])])
 			

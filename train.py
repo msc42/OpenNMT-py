@@ -117,6 +117,15 @@ parser.add_argument('-log_interval', type=int, default=100,
 parser.add_argument('-save_every', type=int, default=-1,
                     help="Save every this interval.")
 
+# For multilingual configs
+parser.add_argument('-share_rnn_enc', action='store_true',
+                    help="""Share Rnn Encoder""")
+parser.add_argument('-share_rnn_dec', action='store_true',
+                    help="""Share Rnn Decoder""")
+parser.add_argument('-share_embedding', action='store_true',
+                    help="""Share embedding between same language in enc and dec""")
+parser.add_argument('-share_attention', action='store_true',
+                    help="""Share attentional modules between pair""")
 opt = parser.parse_args()
 
 print(opt)
@@ -145,13 +154,6 @@ def NMTCriterion(dicts):
 	
 	
 	return crits
-    #~ weight = torch.ones(vocabSize)
-    #~ weight[onmt.Constants.PAD] = 0
-    #~ crit = nn.NLLLoss(weight, size_average=False)
-    #~ if opt.gpus:
-        #~ crit.cuda()
-    #~ return crit
-
 
 def memoryEfficientLoss(outputs, targets, generator, crit, eval=False):
     # compute generations one piece at a time
@@ -323,9 +325,10 @@ def trainModel(model, trainSets, validSets, dataset, optim):
                 
             # Saving checkpoints with validation perplexity
 						if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
-							valid_losses = eval(model, criterions, validSets, setIDs)
+							valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
 							valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
-							print('Validation perplexity: %s' % valid_ppl)
+							for i in xrange(len(setIDs)):
+								print('Validation perplexity for set %d : %g' % (i, valid_ppl[i]))
 							
 							
 							model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
@@ -335,16 +338,6 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 							generator_state_dict = (model.generator.module.state_dict()
 																			if len(opt.gpus) > 1
 																			else model.generator.state_dict())
-							checkpoint = {
-									'model': model_state_dict,
-									'generator': generator_state_dict,
-									'dicts': dataset['dicts'],
-									'opt': opt,
-									'epoch': epoch,
-									'iteration' : -1,
-									'batchOrder' : None,
-									'optim': optim
-							}
 							#  drop a checkpoint
 							ep = float(epoch) - 1 + (i + 1) / nSamples
 							checkpoint = {
@@ -359,6 +352,7 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 							}
 							
 							file_name = '%s_ppl_%s_e%.2f.pt'
+							valid_ppl = "_".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
 							print('Writing to %s_ppl_%s_e%.2f.pt' % (opt.save_model, valid_ppl, ep))
 							torch.save(checkpoint,
 												 file_name
@@ -385,8 +379,7 @@ def trainModel(model, trainSets, validSets, dataset, optim):
         valid_losses = eval(model, criterions, validSets, setIDs)
         valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
         for i in xrange(len(setIDs)):
-					print('Validation perplexity for set %d : %g' % (i, valid_ppl[i]))
-#~ 
+					print('Validation perplexity for set %d : %g' % (i, valid_ppl[i])) 
         #  (3) update the learning rate
         #~ optim.updateLearningRate(valid_ppl, epoch)
 
@@ -410,7 +403,7 @@ def trainModel(model, trainSets, validSets, dataset, optim):
         }
         
 				
-        valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
+        valid_ppl = "_".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
         file_name = '%s_ppl_%s_e%d.pt'
         print('Writing to %s_ppl_%s_e%d.pt' % (opt.save_model, valid_ppl, epoch))
         torch.save(checkpoint,
@@ -456,7 +449,7 @@ def main():
     
     
     encoder = onmt.Models.Encoder(opt, dicts['src'])
-    decoder = onmt.Models.Decoder(opt, dicts['tgt'])
+    decoder = onmt.Models.Decoder(opt, dicts['tgt'], nSets)
     generator = onmt.Models.Generator(opt, dicts['tgt'])
 
     model = onmt.Models.NMTModel(encoder, decoder)
@@ -490,6 +483,9 @@ def main():
         generator = nn.DataParallel(generator, device_ids=opt.gpus, dim=0)
 
     model.generator = generator
+    
+    if opt.share_embedding:
+			model.shareEmbedding(dicts)
 
     if not opt.train_from_state_dict and not opt.train_from:
         for p in model.parameters():

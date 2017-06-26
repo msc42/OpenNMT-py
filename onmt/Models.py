@@ -16,17 +16,15 @@ class Encoder(nn.Module):
         input_size = opt.word_vec_size
 
         super(Encoder, self).__init__()
-        #~ self.word_lut = nn.Embedding(dicts.size(),
-                                     #~ opt.word_vec_size,
-                                     #~ padding_idx=onmt.Constants.PAD)
-                                     
         self.word_lut = onmt.modules.MultiWordEmbedding(opt, dicts)
         
-        self.rnn = nn.LSTM(input_size, self.hidden_size,
+        rnn = lambda: nn.LSTM(input_size, self.hidden_size,
                            num_layers=opt.layers,
                            dropout=opt.dropout,
                            bidirectional=opt.brnn)
-
+        
+        #~ self.rnn = onmt.modules.MultiCloneModule(rnn, dicts, share=opt.share_rnn_enc)
+        self.rnn = onmt.modules.MultiModule(rnn, len(dicts), share=opt.share_rnn_enc)
     #~ def load_pretrained_vectors(self, opt):
         #~ if opt.pre_word_vecs_enc is not None:
             #~ pretrained = torch.load(opt.pre_word_vecs_enc)
@@ -47,6 +45,11 @@ class Encoder(nn.Module):
     def switchID(self, srcID):
 				
 				self.word_lut.switchID(srcID)
+				self.rnn.switchID(srcID)
+				
+    def switchPairID(self, srcID):
+				
+				return
 
 
 class StackedLSTM(nn.Module):
@@ -79,7 +82,7 @@ class StackedLSTM(nn.Module):
 
 class Decoder(nn.Module):
 
-    def __init__(self, opt, dicts):
+    def __init__(self, opt, dicts, nPairs=1):
         self.layers = opt.layers
         self.input_feed = opt.input_feed
         input_size = opt.word_vec_size
@@ -88,9 +91,14 @@ class Decoder(nn.Module):
 
         super(Decoder, self).__init__()
         self.word_lut = onmt.modules.MultiWordEmbedding(opt, dicts)
-        self.rnn = StackedLSTM(opt.layers, input_size,
-                               opt.rnn_size, opt.dropout)
-        self.attn = onmt.modules.GlobalAttention(opt.rnn_size)
+        
+        f = lambda: StackedLSTM(opt.layers, input_size, opt.rnn_size, opt.dropout)
+                               
+        self.rnn = onmt.modules.MultiModule(f, len(dicts), share=opt.share_rnn_dec) 
+        
+        attn = lambda : onmt.modules.GlobalAttention(opt.rnn_size)
+        self.attn = onmt.modules.MultiModule(attn, nPairs, share=opt.share_attention)
+        
         self.dropout = nn.Dropout(opt.dropout)
 
         self.hidden_size = opt.rnn_size
@@ -125,6 +133,11 @@ class Decoder(nn.Module):
     def switchID(self, tgtID):
 				
 				self.word_lut.switchID(tgtID)
+				self.rnn.switchID(tgtID)
+				
+    def switchPairID(self, pairID):
+				
+				return
 
 
 class NMTModel(nn.Module):
@@ -168,7 +181,42 @@ class NMTModel(nn.Module):
 				self.encoder.switchID(srcID)
 				self.decoder.switchID(tgtID)
 				self.generator.switchID(tgtID)
-
+		
+		# This function needs to look at the dict
+		# If the dict at encoder and decoder has the same name -> tie them
+    def shareEmbedding(self, dicts):
+				
+				setIDs = dicts['setIDs']
+				#~ langs = dicts['langs']
+				
+				srcLangs = dicts['srcLangs']
+				tgtLangs = dicts['tgtLangs']
+				
+				tieList = list()
+				#~ 
+				for (i, srcLang) in enumerate(srcLangs):
+					
+					for (j, tgtLang) in enumerate(tgtLangs):
+						
+						if srcLang == tgtLang:
+							#~ print(i, j)
+							tieList.append([i, j])
+							# Tie these embeddings
+							print(' * Tying embedding of encoder and decoder for lang %s' % srcLang)
+							nParams = sum([p.nelement() for p in self.encoder.word_lut.moduleList[i].parameters()]) 
+							assertp = sum([p.nelement() for p in self.decoder.word_lut.moduleList[j].parameters()]) 
+							assert(nParams == assertp)
+							self.encoder.word_lut.moduleList[i].weight = self.decoder.word_lut.moduleList[j].weight
+				
+				
+							
+				#~ for i in xrange(len(setIDs)):
+								
+							
+				return tieList
+				
+				
+			
 
 class Generator(nn.Module):
 	

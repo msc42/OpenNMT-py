@@ -4,6 +4,7 @@ from torch.autograd import Variable
 import onmt.modules
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
+import copy
 
 class MultiWordEmbedding(nn.Module):
 	
@@ -75,3 +76,63 @@ class MultiLinear(nn.Module):
 		
 		return output
 
+
+
+
+class MultiCloneModule(nn.Module):
+	
+	def __init__(self, m, dicts, share=False):
+		
+		super(MultiCloneModule, self).__init__()
+		
+		self.moduleList = nn.ModuleList()
+		self.moduleList.append(m)
+		
+		for i in range(1, len(dicts)):
+			clone = copy.deepCopy(m)
+			
+			if share:
+				clone.weight = m.weight
+				
+			self.moduleList.append(clone)
+			
+		self.currentID = 0
+		
+	def switchID(self, idx):
+		
+		assert idx >= 0 and idx < len(self.moduleList)
+		self.currentID = idx
+		
+	def forward(self, input):
+		
+		module = self.moduleList[self.currentID]
+		output = module(input)
+		
+		return output
+			
+class MultiModule(nn.Module):
+	
+	def __init__(self, m, nModules, share=False):
+	
+		super(MultiModule, self).__init__()
+		self.moduleList = nn.ModuleList()
+		for i in range(nModules):
+			module = m()
+			self.moduleList.append(module)
+			if share:
+				clone.weight = self.moduleList[0].weight
+		
+		self.currentID = 0
+		
+		
+	def switchID(self, idx):
+		
+		assert idx >= 0 and idx < len(self.moduleList)
+		self.currentID = idx
+		
+	def forward(self, *input):
+		
+		module = self.moduleList[self.currentID]
+		output = module(*input)
+		
+		return output
