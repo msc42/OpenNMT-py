@@ -35,10 +35,7 @@ class MultiWordEmbedding(nn.Module):
 	def forward(self, input):
 		
 		lookup = self.moduleList[self.currentID]
-		
-		embedding = lookup(input)
-		
-		return embedding
+		return lookup(input)
 
 
 class MultiLinear(nn.Module):
@@ -71,10 +68,7 @@ class MultiLinear(nn.Module):
 	def forward(self, input):
 	
 		linear = self.moduleList[self.currentID]
-		
-		output = linear(input)
-		
-		return output
+		return linear(input)
 
 
 
@@ -106,9 +100,7 @@ class MultiCloneModule(nn.Module):
 	def forward(self, input):
 		
 		module = self.moduleList[self.currentID]
-		output = module(input)
-		
-		return output
+		return module(input)
 			
 class MultiModule(nn.Module):
 	
@@ -133,6 +125,8 @@ class MultiModule(nn.Module):
 	def forward(self, *input):
 		
 		module = self.moduleList[self.currentID]
-		output = module(*input)
+		return module(*input)
 		
-		return output
+	def current(self):
+		
+		return self.moduleList[self.currentID]

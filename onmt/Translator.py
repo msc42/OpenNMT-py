@@ -17,27 +17,21 @@ class Translator(object):
         self.opt = opt
         self.tt = torch.cuda if opt.cuda else torch
         self.beam_accum = None
+        self._type = "text"
 
         checkpoint = torch.load(opt.model)
 
         model_opt = checkpoint['opt']
-        self.src_dict = checkpoint['dicts']['src']
-        self.tgt_dict = checkpoint['dicts']['tgt']
-        self._type = model_opt.encoder_type \
-            if "encoder_type" in model_opt else "text"
+        self.dicts = checkpoint['dicts']
+        self.src_dict = self.dicts['vocabs'][opt.src_lang]
+        self.tgt_dict = self.dicts['vocabs'][opt.tgt_lang]
+        nSets = self.dicts['nSets']
 
-        if self._type == "text":
-            encoder = onmt.Models.Encoder(model_opt, self.src_dict)
-        elif self._type == "img":
-            loadImageLibs()
-            encoder = onmt.modules.ImageEncoder(model_opt)
-
-        decoder = onmt.Models.Decoder(model_opt, self.tgt_dict)
+        encoder = onmt.Models.Encoder(model_opt, self.dicts['src'])
+        decoder = onmt.Models.Decoder(model_opt, self.dicts['tgt'], nSets)
         model = onmt.Models.NMTModel(encoder, decoder)
 
-        generator = nn.Sequential(
-            nn.Linear(model_opt.rnn_size, self.tgt_dict.size()),
-            nn.LogSoftmax())
+        generator = onmt.Models.Generator(model_opt, self.dicts['tgt'])
 
         model.load_state_dict(checkpoint['model'])
         generator.load_state_dict(checkpoint['generator'])
@@ -53,6 +47,25 @@ class Translator(object):
 
         self.model = model
         self.model.eval()
+        
+        # Need to find the src and tgt id
+        srcID = self.dicts['srcLangs'].index(opt.src_lang)
+        tgtID = self.dicts['tgtLangs'].index(opt.tgt_lang)
+        
+        # After that, look for the pairID
+        
+        setIDs = self.dicts['setIDs']
+        
+        pair = -1
+        for i, sid in enumerate(setIDs):
+					if sid[0] == srcID and sid[1] == tgtID:
+						pair = i
+						break
+						
+        assert pair >= 0, "Cannot find any language pair with your provided src and tgt id"
+        print(" * Translating with pair %i " % pair)
+        self.model.switchLangID(srcID, tgtID)
+        self.model.switchPairID(pair) 
 
     def initBeamAccum(self):
         self.beam_accum = {
@@ -116,7 +129,7 @@ class Translator(object):
                      self.model._fix_enc_hidden(encStates[1]))
 
         decoder = self.model.decoder
-        attentionLayer = decoder.attn
+        attentionLayer = decoder.attn.current()
         useMasking = self._type == "text"
 
         #  This mask is applied to the attention model inside the decoder

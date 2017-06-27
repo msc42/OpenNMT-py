@@ -136,7 +136,7 @@ class Decoder(nn.Module):
 				self.rnn.switchID(tgtID)
 				
     def switchPairID(self, pairID):
-				
+				self.attn.switchID(pairID)
 				return
 
 
@@ -181,6 +181,9 @@ class NMTModel(nn.Module):
 				self.encoder.switchID(srcID)
 				self.decoder.switchID(tgtID)
 				self.generator.switchID(tgtID)
+    def switchPairID(self, pairID):
+				
+				self.decoder.switchPairID(pairID)
 		
 		# This function needs to look at the dict
 		# If the dict at encoder and decoder has the same name -> tie them
@@ -207,11 +210,6 @@ class NMTModel(nn.Module):
 							assertp = sum([p.nelement() for p in self.decoder.word_lut.moduleList[j].parameters()]) 
 							assert(nParams == assertp)
 							self.encoder.word_lut.moduleList[i].weight = self.decoder.word_lut.moduleList[j].weight
-				
-				
-							
-				#~ for i in xrange(len(setIDs)):
-								
 							
 				return tieList
 				
