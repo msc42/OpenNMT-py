@@ -169,10 +169,11 @@ def main():
                 print('')
 
         srcBatch, tgtBatch = [], []
-
-    reportScore('PRED', predScoreTotal, predWordsTotal)
-    if tgtF:
-        reportScore('GOLD', goldScoreTotal, goldWordsTotal)
+		
+    if opt.verbose:
+			reportScore('PRED', predScoreTotal, predWordsTotal)
+			if tgtF:
+					reportScore('GOLD', goldScoreTotal, goldWordsTotal)
 
     if tgtF:
         tgtF.close()
