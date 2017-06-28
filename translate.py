@@ -6,6 +6,7 @@ import torch
 import argparse
 import math
 import numpy
+import sys
 
 parser = argparse.ArgumentParser(description='translate.py')
 onmt.Markdown.add_md_help_argument(parser)
@@ -74,9 +75,11 @@ def main():
     # Always pick n_best
     opt.n_best = opt.beam_size
 		
-    translator = onmt.Translator(opt)
-
-    outF = open(opt.output, 'w')
+    
+    if opt.output == "stdout":
+			outF = sys.stdout
+    else:
+			outF = open(opt.output, 'w')
 
     predScoreTotal, predWordsTotal, goldScoreTotal, goldWordsTotal = 0, 0, 0, 0
 
@@ -89,8 +92,18 @@ def main():
     if opt.dump_beam != "":
         import json
         translator.initBeamAccum()
-
-    for line in addone(open(opt.src)):
+		
+		# here we are trying to 
+    inFile = None
+    if(opt.src == "stdin"):
+			inFile = sys.stdin
+			opt.batch_size = 1
+    else:
+      inFile = open(opt.src)
+		
+    translator = onmt.Translator(opt)
+		
+    for line in addone(inFile):
         if line is not None:
             srcTokens = line.split()
             srcBatch += [srcTokens]
@@ -123,33 +136,9 @@ def main():
             goldScoreTotal += sum(goldScore)
             goldWordsTotal += sum(len(x) for x in tgtBatch)
             
-        
-        
-        #~ scores = torch.Tensor(len(predBatch)
-        
-        #~ for b in range(len(predBatch)):
-					#~ scores[b] = predScore[b]
-					
-					#~ if opt.normalize:
-						#~ scores[b] = scores[b] / (len(predBatch[b][0]) + 1)
-
         for b in range(len(predBatch)):
-						# Pred Batch always have n-best outputs  
-            #~ scores = torch.Tensor(len(predBatch[b]))
-            #~ for n in range(opt.n_best):
-							#~ scores[n] = predScore[b][n]
-							#~ if opt.normalize:
-								#~ scores[n] = scores[n] / numpy.minimum(1, ( len(predBatch[b][n])))
-						#~ 
-            #~ sorted_scores, sorted_index = torch.sort(scores, 0, True)
-            #~ bestSent = predBatch[b][sorted_index[0]]
-            #~ bestIndex = sorted_index[0]
-            count += 1
-						# Best sentence = having highest log prob
-            
-            
 						
-            
+            count += 1
 						
             if not opt.print_nbest:
 							outF.write(" ".join(predBatch[b][0]) + '\n')
@@ -190,6 +179,8 @@ def main():
 
     if opt.dump_beam:
         json.dump(translator.beam_accum, open(opt.dump_beam, 'w'))
+    
+    
 
 
 if __name__ == "__main__":
