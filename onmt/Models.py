@@ -19,27 +19,78 @@ class Encoder(nn.Module):
         self.word_lut = nn.Embedding(dicts.size(),
                                      opt.word_vec_size,
                                      padding_idx=onmt.Constants.PAD)
-        self.rnn = nn.LSTM(input_size, self.hidden_size,
-                           num_layers=opt.layers,
-                           dropout=opt.dropout,
-                           bidirectional=opt.brnn)
+        #~ self.rnn = nn.LSTM(input_size, self.hidden_size,
+                           #~ num_layers=opt.layers,
+                           #~ dropout=opt.dropout,
+                           #~ bidirectional=opt.brnn)
+        self.rnns = nn.ModuleList()
+        self.self_atts = nn.ModuleList()
+        
+        for i in xrange(self.layers):
+					rnn = nn.LSTM(input_size, self.hidden_size,
+												num_layers=1,
+												bidirectional=opt.brnn)
+																			
+					self.rnns.append(rnn)
+					
+					if i + 1 < self.layers:
+						att = onmt.modules.MultiHeadedAttention(opt.rnn_size, heads=8, p=0.05)
+						self.self_atts.append(att)
+				
+        self.dropout = nn.Dropout(opt.dropout)
+        
 
     def load_pretrained_vectors(self, opt):
         if opt.pre_word_vecs_enc is not None:
             pretrained = torch.load(opt.pre_word_vecs_enc)
             self.word_lut.weight.data.copy_(pretrained)
 
-    def forward(self, input, hidden=None):
-        if isinstance(input, tuple):
+    def forward(self, input, hidden=None, mask=None):
+				
+        useVariableLength = isinstance(input, tuple)
+			
+        if useVariableLength:
             # Lengths data is wrapped inside a Variable.
             lengths = input[1].data.view(-1).tolist()
-            emb = pack(self.word_lut(input[0]), lengths)
+            emb = self.word_lut(input[0])
+            #~ pack(self.word_lut(input[0]), lengths)
         else:
             emb = self.word_lut(input)
-        outputs, hidden_t = self.rnn(emb, hidden)
-        if isinstance(input, tuple):
-            outputs = unpack(outputs)[0]
-        return hidden_t, outputs
+        #~ outputs, hidden_t = self.rnn(emb, hidden)
+        outputs = emb
+        for i in range(self.layers):
+					
+					if i > 0 :
+						# Transpose for batch first
+						input_attn = outputs.transpose(0, 1).contiguous()
+					
+						# Self Attention Layer
+						# All attention input comes from the same matrix
+						att_output, att_weight = self.self_atts[i-1](input_attn, input_attn, input_attn)
+						
+						# Transpose for time first (for rnn)
+						att_output = att_output.transpose(0, 1)
+					else:
+						att_output = outputs
+					
+					# Adding dropout (from layer 2)
+					if i > 0:
+						rnn_input = self.dropout(att_output)
+					else:
+						rnn_input = att_output
+					
+					if useVariableLength:
+						rnn_input = pack(rnn_input, lengths)
+					
+					rnn_output, _ = self.rnns[i](rnn_input)
+					
+					if useVariableLength:
+						rnn_output = unpack(rnn_output)[0]
+						
+					outputs = rnn_output
+					
+        
+        return outputs
 
 
 class StackedLSTM(nn.Module):
@@ -85,7 +136,8 @@ class Decoder(nn.Module):
                                      padding_idx=onmt.Constants.PAD)
         self.rnn = StackedLSTM(opt.layers, input_size,
                                opt.rnn_size, opt.dropout)
-        self.attn = onmt.modules.GlobalAttention(opt.rnn_size)
+        #~ self.attn = onmt.modules.GlobalAttention(opt.rnn_size)
+        self.attn = onmt.modules.MultiHeadedAttention(opt.rnn_size, heads=8, p=0.05, norm=False)
         self.dropout = nn.Dropout(opt.dropout)
 
         self.hidden_size = opt.rnn_size
@@ -94,6 +146,17 @@ class Decoder(nn.Module):
         if opt.pre_word_vecs_dec is not None:
             pretrained = torch.load(opt.pre_word_vecs_dec)
             self.word_lut.weight.data.copy_(pretrained)
+            
+    def init_hidden(self, batch_size, context):
+			
+				h_size = (self.layers, batch_size, self.hidden_size)
+				#~ return Variable(context.data.new(*h_size).zero_(), requires_grad=False)
+				
+				init_h = Variable(context.data.new(*h_size).zero_(), requires_grad=False)
+				init_c = Variable(context.data.new(*h_size).zero_(), requires_grad=False)
+				
+				return (init_h, init_c)
+
 
     def forward(self, input, hidden, context, init_output):
         emb = self.word_lut(input)
@@ -101,6 +164,13 @@ class Decoder(nn.Module):
         # n.b. you can increase performance if you compute W_ih * x for all
         # iterations in parallel, but that's only possible if
         # self.input_feed=False
+        batch_size = context.size(1)
+        
+        # For the first step, hidden could be None
+        if hidden is None:
+					hidden = self.init_hidden(batch_size, context)
+					
+        
         outputs = []
         output = init_output
         for emb_t in emb.split(1):
@@ -109,7 +179,14 @@ class Decoder(nn.Module):
                 emb_t = torch.cat([emb_t, output], 1)
 
             output, hidden = self.rnn(emb_t, hidden)
-            output, attn = self.attn(output, context.transpose(0, 1))
+            
+            attn_query = output.unsqueeze(1) # B x 1 x H
+            attn_key = context.transpose(0, 1).contiguous()
+            attn_value = attn_key
+            #~ output, attn = self.attn(attn_key, context.transpose(0, 
+            output, attn = self.attn(attn_key, attn_value, attn_query)
+            output = output.squeeze(1) # B x 1
+            attn = attn.squeeze(1)
             output = self.dropout(output)
             outputs += [output]
 
@@ -142,13 +219,14 @@ class NMTModel(nn.Module):
     def forward(self, input):
         src = input[0]
         tgt = input[1][:-1]  # exclude last target from inputs
-        enc_hidden, context = self.encoder(src)
+        context = self.encoder(src)
         init_output = self.make_init_decoder_output(context)
+			
+				# Two elements because we have H and C 
+        #~ enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
+                      #~ self._fix_enc_hidden(enc_hidden[1]))
 
-        enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
-                      self._fix_enc_hidden(enc_hidden[1]))
-
-        out, dec_hidden, _attn = self.decoder(tgt, enc_hidden,
+        out, dec_hidden, _attn = self.decoder(tgt, None,
                                               context, init_output)
 
         return out
