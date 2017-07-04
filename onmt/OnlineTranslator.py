@@ -29,7 +29,7 @@ class OnlineTranslator(object):
     
 
     def translate(self,input):
-              predBatch, predScore, goldScore = self.translator.translate([input],[])
+              predBatch, predScore, goldScore = self.translator.translate([input.split()],[])
               return " ".join(predBatch[0][0])
   
 
