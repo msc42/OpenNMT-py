@@ -19,6 +19,7 @@ class TranslatorParameter(object):
         self.replace_unk = False
         self.gpu = -1;
         self.cuda = 0;
+        self.verbose = False
         
 
 class OnlineTranslator(object):
