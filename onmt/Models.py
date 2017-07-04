@@ -115,7 +115,7 @@ class Decoder(nn.Module):
 
         outputs = torch.stack(outputs)
         return outputs, hidden, attn
-
+		
 
 class NMTModel(nn.Module):
 
@@ -152,3 +152,6 @@ class NMTModel(nn.Module):
                                               context, init_output)
 
         return out
+		
+    def tie_weights(self):
+				self.generator[0].weight = self.decoder.word_lut.weight
