@@ -97,10 +97,11 @@ parser.add_argument('-learning_rate_decay', type=float, default=1,
                     this much if (i) perplexity does not decrease on the
                     validation set or (ii) epoch has gone past
                     start_decay_at""")
-parser.add_argument('-start_decay_at', type=int, default=8,
+parser.add_argument('-start_decay_at', type=int, default=1000,
                     help="""Start decaying every epoch after and including this
                     epoch""")
-
+parser.add_argument('-reset_optim', action='store_true',
+                    help='Use a bidirectional encoder')
 # pretrained word vectors
 
 parser.add_argument('-pre_word_vecs_enc',
@@ -292,11 +293,11 @@ def trainModel(model, trainData, validData, dataset, optim):
 
             
             if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
-                print(("Epoch %2d, %5d/%5d; ; ppl: %6.2f;" +
+                print(("Epoch %2d, %5d/%5d; ; ppl: %6.2f; lr: %1.6f; " +
                        "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
                       (epoch, i+1, len(trainData),
-                       
                        math.exp(report_loss / report_tgt_words),
+                       optim.lr,
                        report_src_words/(time.time()-start),
                        report_tgt_words/(time.time()-start),
                        time.time()-start_time))
@@ -455,7 +456,7 @@ def main():
     model.generator = generator
 
     if not opt.train_from_state_dict and not opt.train_from:
-        for p in model.parameters():
+        for p in model.parameters() and opt.reset_optim:
             p.data.uniform_(-opt.param_init, opt.param_init)
 
         encoder.load_pretrained_vectors(opt)
@@ -470,8 +471,16 @@ def main():
         print('Loading optimizer from checkpoint:')
         optim = checkpoint['optim']
         print(optim)
+        # Force change learning rate
+        optim.lr = opt.learning_rate
+        optim.start_decay_at = opt.start_decay_at
+        optim.start_decay = False
+        
 
+		
+		
     optim.set_parameters(model.parameters())
+		
 		
 		# This doesn't work for me
 		# But still there in the main repo
