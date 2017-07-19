@@ -64,8 +64,10 @@ class Translator(object):
 						
         assert pair >= 0, "Cannot find any language pair with your provided src and tgt id"
         print(" * Translating with pair %i " % pair)
+        print(srcID, tgtID)
+        print(self.model)
         self.model.switchLangID(srcID, tgtID)
-        self.model.switchPairID(pair) 
+        self.model.switchPairID(0) 
 
     def initBeamAccum(self):
         self.beam_accum = {

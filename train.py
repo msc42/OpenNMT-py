@@ -58,7 +58,7 @@ parser.add_argument('-max_generator_batches', type=int, default=32,
                     help="""Maximum batches of words in a sequence to run
                     the generator on in parallel. Higher is faster, but uses
                     more memory.""")
-parser.add_argument('-epochs', type=int, default=13,
+parser.add_argument('-epochs', type=int, default=15,
                     help='Number of training epochs')
 parser.add_argument('-start_epoch', type=int, default=1,
                     help='The epoch from which to start')
@@ -138,6 +138,18 @@ if opt.gpus:
 
 torch.manual_seed(opt.seed)
 
+def averagePPL(losses, counts):
+	
+	#~ ppls = 
+	ppls = []
+	#~ print(losses)
+	#~ print(counts)
+	#~ for (loss, count) in enumerate(zip(losses, counts)):
+	for i in xrange(len(counts)):
+		ppl = math.exp(losses[i] / (counts[i] + 1e-6))
+		ppls.append(ppl)
+	return sum(ppls) / len(ppls)
+
 def NMTCriterion(dicts):
 	
 	crits = dict()
@@ -151,7 +163,6 @@ def NMTCriterion(dicts):
 			crit.cuda()
 		
 		crits[i] = crit
-	
 	
 	return crits
 
@@ -179,12 +190,13 @@ def eval(model, criterions, data, setIDs):
 		model.eval()
 		losses = []
 		
-		for sid in data:
+		for sid in data: # sid = setid
 			dset = data[sid]
 			total_loss = 0
 			total_words = 0
 			
 			model.switchLangID(setIDs[sid][0], setIDs[sid][1])
+			model.switchPairID(sid)
 			
 			# each target language requires a criterion, right ?
 			criterion =	criterions[setIDs[sid][1]]	
@@ -276,6 +288,7 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 						
 						# And switch the model to the desired language mode
 						model.switchLangID(setIDs[sampledSet][0], setIDs[sampledSet][1])
+						model.switchPairID(sampledSet)
 						
 						# Do forward to the newly created graph
 						model.zero_grad()
@@ -304,16 +317,19 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 
 						# Logging information
 						if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
-								logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed " %
+								avgTrainLoss = averagePPL(report_loss, report_tgt_words)
+								logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed; ppl: %6.2f " %
 												(epoch, i+1, nSamples,
 												 sum(report_src_words)/(time.time()-start),
 												 sum(report_tgt_words)/(time.time()-start),
-												 time.time()-start_time))
+												 time.time()-start_time,
+												 avgTrainLoss))
 												 
 								for j in xrange(len(setIDs)):
-									ppl = math.exp(report_loss[j] / (report_tgt_words[j] + 1e-6))
-									pplLog = ("; ppl for set %d : %6.2f " % (j, ppl))
-									logOut = logOut + pplLog
+									#~ ppl = math.exp(report_loss[j] / (report_tgt_words[j] + 1e-6))
+									#~ setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][j])
+									#~ pplLog = ("%s : %6.2f ;" % (setLangs, ppl))
+									#~ logOut = logOut + pplLog
 									
 									report_loss[j] = 0
 									report_tgt_words[j] = 0
@@ -325,12 +341,15 @@ def trainModel(model, trainSets, validSets, dataset, optim):
                 
             # Saving checkpoints with validation perplexity
 						if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
+							valid_losses = eval(model, criterions, validSets, setIDs)
 							valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
-							valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
+							#~ valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
 							for i in xrange(len(setIDs)):
-								print('Validation perplexity for set %d : %g' % (i, valid_ppl[i]))
+								setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
+								print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
 							
 							
+							avgDevPpl = sum(valid_ppl) / len(valid_ppl)
 							model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
                             else model.state_dict())
 							model_state_dict = {k: v for k, v in model_state_dict.items()
@@ -351,18 +370,19 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 									'optim': optim
 							}
 							
-							file_name = '%s_ppl_%s_e%.2f.pt'
-							valid_ppl = "_".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
-							print('Writing to %s_ppl_%s_e%.2f.pt' % (opt.save_model, valid_ppl, ep))
+							file_name = '%s_ppl_%.2f_e%.2f.pt'
+							#~ valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
+							print('Writing to %s_ppl_%.2f_e%.2f.pt' % (opt.save_model, avgDevPpl, ep))
 							torch.save(checkpoint,
 												 file_name
-												 % (opt.save_model, valid_ppl, epoch))
+												 % (opt.save_model, avgDevPpl, ep))
         return [total_loss[j] / total_words[j] for j in xrange(len(setIDs))]
 		
     valid_losses = eval(model, criterions, validSets, setIDs)
     valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
     for i in xrange(len(setIDs)):
-			print('Validation perplexity for set %d : %g' % (i, valid_ppl[i]))
+			setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
+			print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
 		
     #~ train_loss = trainEpoch(0)
 		
@@ -378,6 +398,7 @@ def trainModel(model, trainSets, validSets, dataset, optim):
         #  (2) evaluate on the validation set
         valid_losses = eval(model, criterions, validSets, setIDs)
         valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
+        avgDevPpl = sum(valid_ppl) / len(valid_ppl)
         for i in xrange(len(setIDs)):
 					print('Validation perplexity for set %d : %g' % (i, valid_ppl[i])) 
         #  (3) update the learning rate
@@ -403,12 +424,12 @@ def trainModel(model, trainSets, validSets, dataset, optim):
         }
         
 				
-        valid_ppl = "_".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
-        file_name = '%s_ppl_%s_e%d.pt'
-        print('Writing to %s_ppl_%s_e%d.pt' % (opt.save_model, valid_ppl, epoch))
+        #~ valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
+        file_name = '%s_ppl_%.2f_e%.2f.pt'
+        print('Writing to %s_ppl_%.2f_e%.2f.pt' % (opt.save_model, avgDevPpl, epoch))
         torch.save(checkpoint,
 									 file_name
-									 % (opt.save_model, valid_ppl, epoch))
+									 % (opt.save_model, avgDevPpl, epoch))
 
 
 def main():

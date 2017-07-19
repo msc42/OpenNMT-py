@@ -23,7 +23,6 @@ class Encoder(nn.Module):
                            dropout=opt.dropout,
                            bidirectional=opt.brnn)
         
-        #~ self.rnn = onmt.modules.MultiCloneModule(rnn, dicts, share=opt.share_rnn_enc)
         self.rnn = onmt.modules.MultiModule(rnn, len(dicts), share=opt.share_rnn_enc)
     #~ def load_pretrained_vectors(self, opt):
         #~ if opt.pre_word_vecs_enc is not None:
@@ -202,14 +201,14 @@ class NMTModel(nn.Module):
 					for (j, tgtLang) in enumerate(tgtLangs):
 						
 						if srcLang == tgtLang:
-							#~ print(i, j)
+							
 							tieList.append([i, j])
-							# Tie these embeddings
+						# Tie these embeddings
 							print(' * Tying embedding of encoder and decoder for lang %s' % srcLang)
-							nParams = sum([p.nelement() for p in self.encoder.word_lut.moduleList[i].parameters()]) 
-							assertp = sum([p.nelement() for p in self.decoder.word_lut.moduleList[j].parameters()]) 
-							assert(nParams == assertp)
-							self.encoder.word_lut.moduleList[i].weight = self.decoder.word_lut.moduleList[j].weight
+							npEnc = self.encoder.word_lut.moduleList[i].weight.nelement()
+							npDec = self.decoder.word_lut.moduleList[j].weight.nelement()
+							assert(npEnc == npDec)
+							self.encoder.word_lut.moduleList[i].weight = self.decoder.word_lut.moduleList[j].weight			
 							
 				return tieList
 				

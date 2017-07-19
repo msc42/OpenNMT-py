@@ -108,19 +108,24 @@ class MultiModule(nn.Module):
 	
 		super(MultiModule, self).__init__()
 		self.moduleList = nn.ModuleList()
+		self.share = share
+		
 		for i in range(nModules):
-			module = m()
-			self.moduleList.append(module)
-			if share:
-				clone.weight = self.moduleList[0].weight
+			
+			if not self.share or i == 0:
+				module = m()
+				self.moduleList.append(module)
+				#~ if share:
+					#~ clone.weight = self.moduleList[0].weight
 		
 		self.currentID = 0
 		
 		
 	def switchID(self, idx):
 		
-		assert idx >= 0 and idx < len(self.moduleList)
-		self.currentID = idx
+		if not self.share:
+			assert idx >= 0 and idx < len(self.moduleList)
+			self.currentID = idx
 		
 	def forward(self, *input):
 		
@@ -128,5 +133,4 @@ class MultiModule(nn.Module):
 		return module(*input)
 		
 	def current(self):
-		
 		return self.moduleList[self.currentID]
