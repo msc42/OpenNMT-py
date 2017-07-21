@@ -1,4 +1,4 @@
-import torch
+import torch, sys
 import torch.nn as nn
 from torch.autograd import Variable
 import onmt.modules
@@ -93,6 +93,9 @@ class Decoder(nn.Module):
 
         self.hidden_size = opt.rnn_size
         self.input_size = input_size
+        
+    def free_mask(self):
+				self.attn.free_mask()
 
     def load_pretrained_vectors(self, opt):
         if opt.pre_word_vecs_dec is not None:
@@ -123,12 +126,15 @@ class Decoder(nn.Module):
 
 class NMTModel(nn.Module):
 
-    def __init__(self, encoder, decoder, generator, criterion):
+    def __init__(self, encoder, decoder, generator):
         super(NMTModel, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.generator = generator
-        self.criterion = criterion
+        
+        # For reinforcement learning 
+        self.saved_actions = []
+        self.rewards = [] # remember that this is cumulative (sum of rewards from start to end)
     
     # For sampling functions, we need to create an initial input
     # Which is vector of batch_size full of BOS    
@@ -156,7 +162,7 @@ class NMTModel(nn.Module):
         else:
             return h
             
-    def sample(self, input, max_length=100, argmax=True):
+    def sample(self, input, max_length=50, argmax=True):
 			
 				
 				src = input[0]
@@ -170,60 +176,88 @@ class NMTModel(nn.Module):
 				sampled = []
 				
 				# we start from the vector of <BOS>				
-				input_t = self.make_init_input(src)
+				init_input = self.make_init_input(src)
 				
 				# For input feeding initial output
 				init_output = self.make_init_decoder_output(context)
+
+				sampled, length = self.sample_from_context(context, init_output, enc_hidden, 
+																									init_input, argmax=argmax, max_length=max_length)
 				
-				hidden = enc_hidden
-				state = init_output
+				return sampled, length
+		
+		
+		# A function to sample from a pre-computed context 
+		# We need the context, the initial hidden layer, the initial state (for input feed) and an initial input
+		# Options are: using argmax or stochastic, and to save the stochastic actions for reinforcement learning
+    def sample_from_context(self, context, init_state, init_hiddens, init_input, 
+														max_length=50, save=False, argmax=True):
+			
+				hidden = init_hiddens
+				state = init_state
+				batch_size = context.size(1) 
+				
+				# we start from the vector of <BOS>				
+				input_t = init_input
+				
+				sampled = []
 				
 				tensor_check = None
-				batch_size = context.size(1)
 				
-				lengths = torch.Tensor(batch_size).fill_(max_length).type_as(input_t.data)
+				lengths = torch.Tensor(1, batch_size).fill_(max_length).type_as(input_t.data)
 				
 				for t in xrange(max_length):
 					# make a forward pass through the decoder
 					state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
 					
-					# from the state, compute the probability distribution
-					# squeeze because state has size 1 x BS x H (due to concat)
 					state = state.squeeze(0)
 					output = self.generator(state) 
-					
 					if argmax:
-						topv, topi = output.data.topk(1)
+						topv, sample = output.data.topk(1)
 						
-						input_t = Variable(topi.t())
+						input_t = Variable(sample.t())
 					else: # Stochastic sampling
-						input_t = output.exp().multinomial().t()
-
+						sample = output.exp().multinomial()
+						
+						input_t = sample.t()
+						
+					if save:
+						assert argmax==False
+						self.saved_actions.append(sample)
+						
 					# condition to stop the sampling procedure
 					check = input_t.eq(onmt.Constants.EOS)
+					
 					if tensor_check is None:
 						tensor_check  = check
 					else:
 						tensor_check += check
 					
-					
-					lengths.masked_fill_(check.squeeze(0).data, t+1)
-					
-					# Every sampled input after EOS is just PAD
 					input_t.masked_fill(tensor_check, onmt.Constants.PAD)
-
-					sampled.append(input_t)
 					
+					sampled.append(input_t)
 					# if all sentences are finished (reach EOS)
-					#~ print(tensor_check.sum().data[0])
 					if tensor_check.sum().data[0] == batch_size:
 						break
+									
+				lengths = [len(sampled) for i in xrange(batch_size)]
+			 
+				for i in xrange(batch_size):
 						
-				lengths = [lengths[i] for i in xrange(batch_size)]
-					
+						for t in xrange(len(sampled)):
+							if sampled[t].data[0][i] == onmt.Constants.EOS:
+								lengths[i] = t + 1
+								break
+				
+				# we concatenate them into one single Tensor 				
+				sampled = torch.cat(sampled, 0)
+				
 				return sampled, lengths
-
-    def forward(self, input, eval=False, mode='xe', teacher_forcing_ratio = 1):
+		
+		
+		# Forward pass :
+		# Two (or mode) modes: Cross Entropy or Reinforce
+    def forward(self, input, eval=False, mode='xe', teacher_forcing_ratio = 1, max_length=50):
         src = input[0]
         tgt = input[1][:-1]  # exclude last target from inputs
         # Exclude <s> from targets for labels
@@ -244,53 +278,62 @@ class NMTModel(nn.Module):
         batch_size = tgt.size(1) 
         length = tgt.size(0)
         
+        # Cross Entropy training:
+        # Using teacher forcing and log-likelihood loss as normally
+        if mode == 'xe':
         
-        # Here we loop over the input
-        for t, input_t in enumerate(tgt.split(1)):
-					
-					use_teacher_forcing = random.random() <= teacher_forcing_ratio
-					
-					
-					if not use_teacher_forcing and t > 1:
-						topv, topi = outputs[t-1].data.topk(1)
+					# Here we loop over the input
+					for t, input_t in enumerate(tgt.split(1)):
 						
-						input_t = Variable(topi.t())
+						use_teacher_forcing = random.random() <= teacher_forcing_ratio
 						
 						
-					
-					state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
-					
-					state = state.squeeze(0)
-					states.append(state)
-					
-					# from the state, compute the probability distribution
-					output = self.generator(state)
-					
-					outputs.append(output)
-		
-					# compute loss
-					loss_t = self.criterion(output, tgt_label[t])
-					
-					if t == 0:
-						loss = loss_t
-					else:
-						loss = loss + loss_t
+						if not use_teacher_forcing and t > 1:
+							topv, topi = outputs[t-1].data.topk(1)
+							
+							input_t = Variable(topi.t())
+							
+						state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
 						
-        
-        if not eval and ( mode =='xe' or mode == 'dad' ):
-					loss.div(batch_size).backward()
+						state = state.squeeze(0)
+						states.append(state)
+						
+						# from the state, compute the probability distribution
+						output = self.generator(state)
+						
+						outputs.append(output)
+			
+						# compute loss
+						loss_t = self.criterion(output, tgt_label[t])
+						
+						if t == 0:
+							loss = loss_t
+						else:
+							loss = loss + loss_t
+					
+					
+					return loss, outputs, states
 				
-        loss_data = loss.data[0]
-				
-        return loss_data, outputs, states
+				# Reinforcement learning as in
+				# Self critical Reinforcement Learning
+        elif mode == 'rf' or mode == 'reinforce':
+					# initial token (BOS)
+					init_input = self.make_init_input(src)
 					
+					# save=True so that the stochastic actions will be saved for the backward pass
+					rl_samples, lengths = self.sample_from_context(context, init_output, enc_hidden, 
+																									init_input, argmax=False, max_length=min(length + 2, 50), save=True)
+					# the baseline is the samples from greedy search
+					greedy_samples, greedy_lengths = self.sample_from_context(context, init_output, enc_hidden, 
+																									init_input, argmax=True, max_length=min(length + 2, 50)) 																				
+										
+					
+					return rl_samples, lengths, greedy_samples, greedy_lengths
         
         
 
 
 class Generator(nn.Module):
-	
-		
 		def __init__(self, inputSize, dicts):
 			
 			super(Generator, self).__init__()
