@@ -44,10 +44,22 @@ class Translator(object):
         generator = nn.Sequential(
             nn.Linear(model_opt.rnn_size, self.tgt_dict.size()),
             nn.LogSoftmax())
+            
+        if 'generator' in checkpoint:
 
-        model.load_state_dict(checkpoint['model'])
-        generator.load_state_dict(checkpoint['generator'])
-
+					model.load_state_dict(checkpoint['model'])
+					generator.load_state_dict(checkpoint['generator'])
+				# this is for version 2 with Reinforcement learning
+        else:
+          checkpoint['generator'] = dict()
+          checkpoint['generator']['0.weight'] = checkpoint['model']['generator.net.0.weight']
+          checkpoint['generator']['0.bias'] = checkpoint['model']['generator.net.0.bias']
+					
+          model_state_dict = {k: v for k, v in checkpoint['model'].items()
+                            if 'generator' not in k and 'criterion' not in k}
+          model.load_state_dict(model_state_dict)
+          generator.load_state_dict(checkpoint['generator'])      
+					
         if opt.cuda:
             model.cuda()
             generator.cuda()
