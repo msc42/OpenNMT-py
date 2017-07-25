@@ -358,7 +358,7 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 																			if len(opt.gpus) > 1
 																			else model.generator.state_dict())
 							#  drop a checkpoint
-							ep = float(epoch) - 1 + (i + 1) / nSamples
+							ep = float(epoch) - 1 + float(i + 1) / nSamples
 							checkpoint = {
 									'model': model_state_dict,
 									'generator': generator_state_dict,
@@ -386,7 +386,7 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 		
     #~ train_loss = trainEpoch(0)
 		
-    for epoch in range(opt.start_epoch, opt.epochs + 1):
+    for epoch in range(opt.start_epoch, opt.start_epoch + opt.epochs):
         print('')
 
         #  (1) train for one epoch on the training set
@@ -527,9 +527,9 @@ def main():
 
     optim.set_parameters(model.parameters())
 
-    if opt.train_from or opt.train_from_state_dict:
-        optim.optimizer.load_state_dict(
-            checkpoint['optim'].optimizer.state_dict())
+    #~ if opt.train_from or opt.train_from_state_dict:
+        #~ optim.optimizer.load_state_dict(
+            #~ checkpoint['optim'].optimizer.state_dict())
 
     nParams = sum([p.nelement() for p in model.parameters()])
     print('* number of parameters: %d' % nParams)

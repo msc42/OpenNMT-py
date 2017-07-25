@@ -67,7 +67,7 @@ class Translator(object):
         print(srcID, tgtID)
         print(self.model)
         self.model.switchLangID(srcID, tgtID)
-        self.model.switchPairID(0) 
+        self.model.switchPairID(pair) 
 
     def initBeamAccum(self):
         self.beam_accum = {
