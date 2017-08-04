@@ -138,14 +138,14 @@ class NMTModel(nn.Module):
     
     # For sampling functions, we need to create an initial input
     # Which is vector of batch_size full of BOS    
-    def make_init_input(self, src):
+    def make_init_input(self, src, volatile=False):
 				if isinstance(src, tuple):
 					src = src[0]
 				batch_size = src.size(1)
 				i_size = (1, batch_size)
 				
 				input_vector = src.data.new(*i_size).fill_(onmt.Constants.BOS)
-				return Variable(input_vector, requires_grad=False)
+				return Variable(input_vector, requires_grad=False, volatile=volatile)
 
     def make_init_decoder_output(self, context):
         batch_size = context.size(1)
@@ -165,7 +165,8 @@ class NMTModel(nn.Module):
     def sample(self, input, max_length=50, argmax=True):
 			
 				
-				src = input[0]
+				#~ src = input[0]
+				src = input
 				# we don't care about tgt here
 				
 				enc_hidden, context = self.encoder(src)
@@ -176,7 +177,7 @@ class NMTModel(nn.Module):
 				sampled = []
 				
 				# we start from the vector of <BOS>				
-				init_input = self.make_init_input(src)
+				init_input = self.make_init_input(src, volatile=True)
 				
 				# For input feeding initial output
 				init_output = self.make_init_decoder_output(context)

@@ -196,28 +196,27 @@ def eval_translate(model, dicts, srcFile, tgtFile, beam_size=1, bpe=True):
 				srcBatch += [srcTokens]
 				if len(srcBatch) < opt.eval_batch_size:
 					continue
-				else:
-					# at the end of file, check last batch
-					if len(srcBatch) == 0:
-							break
+			
+			if len(srcBatch) == 0:
+				break		
 				
-				predBatch, predScore, goldScore = translator.translate(srcBatch)
+			predBatch, predScore, goldScore = translator.translate(srcBatch)
+			
+			for b in range(len(predBatch)):
+				count += 1
+				decodedSent = " ".join(predBatch[b][0])
 				
-				for b in range(len(predBatch)):
-					count += 1
-					decodedSent = " ".join(predBatch[b][0])
-					
-					if bpe:
-						decodedSent = decodedSent.replace('@@ ', '')
-					
-					outF.write(decodedSent + "\n")
-					outF.flush()
-					
-					sys.stdout.write("\r* %i/%i Sentences" % (count , nLines))
-					sys.stdout.flush()
+				if bpe:
+					decodedSent = decodedSent.replace('@@ ', '')
 				
-				srcBatch = []
-		print(count)
+				outF.write(decodedSent + "\n")
+				outF.flush()
+				
+				sys.stdout.write("\r* %i/%i Sentences" % (count , nLines))
+				sys.stdout.flush()
+			
+			srcBatch = []
+			
 		print("\nDone")
 		refFile = open(tgtFile)
 		
@@ -273,7 +272,15 @@ def sample(model, batch, dicts, eval=False):
 		if eval:
 			model.eval()
 		print("\nSampling ... ")
-		sampled_sequence, lengths = model.sample(batch, argmax=False)
+		
+		src = batch[0]
+		
+		# I wrap a new variable so that the sampling process
+		# doesn't record any history (more memory efficient ?)
+		variable = Variable(src[0].data, volatile=True)
+		length = Variable(src[1].data, volatile=True)
+		
+		sampled_sequence, lengths = model.sample((variable, length), argmax=False)
 		
 		tgtDict = dicts['tgt']
 		srcDict = dicts['src']
@@ -595,11 +602,10 @@ def main():
         opt.start_epoch = checkpoint['epoch'] + 1
 
     if opt.train_from_state_dict:
+				
         print('Loading model from checkpoint at %s'
               % opt.train_from_state_dict)
-        #~ print(checkpoint['generator'])
-        for key, value in checkpoint['generator'].iteritems() :
-					print key
+        model.criterion = criterion
         model.load_state_dict(checkpoint['model'])
         opt.start_epoch = checkpoint['epoch'] + 1
 		
