@@ -136,6 +136,8 @@ class NMTModel(nn.Module):
         self.saved_actions = []
         self.rewards = [] # remember that this is cumulative (sum of rewards from start to end)
     
+    def tie_weights(self):
+				self.decoder.word_lut.weight = self.generator.net[0].weight
     # For sampling functions, we need to create an initial input
     # Which is vector of batch_size full of BOS    
     def make_init_input(self, src, volatile=False):

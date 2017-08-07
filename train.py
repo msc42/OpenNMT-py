@@ -67,10 +67,8 @@ parser.add_argument('-batch_size', type=int, default=64,
                     help='Maximum batch size')
 parser.add_argument('-eval_batch_size', type=int, default=8,
                     help='Maximum batch size for decoding eval')
-parser.add_argument('-max_generator_batches', type=int, default=32,
-                    help="""Maximum batches of words in a sequence to run
-                    the generator on in parallel. Higher is faster, but uses
-                    more memory.""")
+parser.add_argument('-tie_weights', action='store_true',
+                    help='Tie the weights of the decoder embedding and logistic regression layer')
 parser.add_argument('-epochs', type=int, default=13,
                     help='Number of training epochs')
 parser.add_argument('-start_epoch', type=int, default=1,
@@ -242,7 +240,10 @@ def eval_translate(model, dicts, srcFile, tgtFile, beam_size=1, bpe=True):
 def compute_score(samples, lengths, ref, dicts, batch_size, average=True):
 		
 		# probably faster than gpu ?
-		samples = samples.cpu()
+		#~ samples = samples.cpu()
+		
+		sdata = samples.data.cpu()
+		rdata = ref.data.cpu()
 		
 		tgtDict = dicts['tgt']
 		
@@ -250,8 +251,8 @@ def compute_score(samples, lengths, ref, dicts, batch_size, average=True):
 		
 		for i in xrange(batch_size):
 			
-			sampledIDs = samples.data[:,i]
-			refIDs = ref.data[:,i]
+			sampledIDs = sdata[:,i]
+			refIDs = rdata[:,i]
 			
 			sampledWords = tgtDict.convertTensorToLabels(sampledIDs, onmt.Constants.EOS)
 			refWords = tgtDict.convertTensorToLabels(refIDs, onmt.Constants.EOS)
@@ -461,7 +462,7 @@ def trainModel(model, trainData, validData, dataset, optim):
                 start = time.time()
             
             if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
-							valid_loss = eval(model, validData)
+							valid_loss = eval(model, validData).data[0]
 							valid_ppl = math.exp(min(valid_loss, 100))
 							valid_bleu = eval_translate(model, dicts, opt.valid_src, opt.valid_tgt)
 							print('Validation perplexity: %g' % valid_ppl)
@@ -579,11 +580,6 @@ def main():
 
     model = onmt.Models.NMTModel(encoder, decoder, generator)
     
-    
-    
-    
-    
-    
 
     if opt.train_from:
         print('Loading model from checkpoint at %s' % opt.train_from)
@@ -616,8 +612,7 @@ def main():
     else:
         model.cpu()
 
-    if len(opt.gpus) > 1:
-        model = nn.DataParallel(model, device_ids=opt.gpus, dim=1)
+    
 
     
 
@@ -628,7 +623,12 @@ def main():
         encoder.load_pretrained_vectors(opt)
         decoder.load_pretrained_vectors(opt)
 				
-        
+    if opt.tie_weights:
+			model.tie_weights()    
+    
+    if len(opt.gpus) > 1:
+        model = nn.DataParallel(model, device_ids=opt.gpus, dim=1)
+    
     #~ else:
         #~ print('Loading optimizer from checkpoint:')
         #~ optim = checkpoint['optim']
