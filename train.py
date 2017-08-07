@@ -117,7 +117,8 @@ parser.add_argument('-log_interval', type=int, default=100,
                     help="Print stats at this interval.")
 parser.add_argument('-save_every', type=int, default=-1,
                     help="Save every this interval.")
-
+parser.add_argument('-uneven_batch', action='store_true',
+                    help='Use imbalance mini_batches (default: all source sentences have the same length)')
 opt = parser.parse_args()
 
 print(opt)
@@ -347,11 +348,11 @@ def main():
 
     trainData = onmt.Dataset(dataset['train']['src'],
                              dataset['train']['tgt'], opt.batch_size, opt.gpus,
-                             data_type=dataset.get("type", "text"))
+                             data_type=dataset.get("type", "text"), balance=(not opt.uneven_batch))
     validData = onmt.Dataset(dataset['valid']['src'],
                              dataset['valid']['tgt'], opt.batch_size, opt.gpus,
                              volatile=True,
-                             data_type=dataset.get("type", "text"))
+                             data_type=dataset.get("type", "text"), balance=(not opt.uneven_batch))
 
     dicts = dataset['dicts']
     print(' * vocabulary size. source = %d; target = %d' %
@@ -401,12 +402,21 @@ def main():
     else:
         model.cpu()
         generator.cpu()
+    
+    model.generator = generator
 
     if len(opt.gpus) > 1:
         model = nn.DataParallel(model, device_ids=opt.gpus, dim=1)
         generator = nn.DataParallel(generator, device_ids=opt.gpus, dim=0)
 
     model.generator = generator
+    
+    # Weight tying :
+    if opt.tie_weights:
+			if len(opt.gpus) > 1:
+				model.module.tie_weights()
+			else:
+				model.tie_weights()
 
     if not opt.train_from_state_dict and not opt.train_from:
         for p in model.parameters():
@@ -425,9 +435,7 @@ def main():
         optim = checkpoint['optim']
         print(optim)
         
-    # Weight tying :
-    if opt.tie_weights:
-			model.tie_weights()
+    
 
     optim.set_parameters(model.parameters())
 
