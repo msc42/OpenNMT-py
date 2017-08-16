@@ -65,10 +65,6 @@ parser.add_argument('-encoder_type', default='text',
                     help="Type of encoder to use. Options are [text|img].")
 parser.add_argument('-batch_size', type=int, default=64,
                     help='Maximum batch size')
-parser.add_argument('-max_generator_batches', type=int, default=32,
-                    help="""Maximum batches of words in a sequence to run
-                    the generator on in parallel. Higher is faster, but uses
-                    more memory.""")                   
 parser.add_argument('-eval_batch_size', type=int, default=8,
                     help='Maximum batch size for decoding eval')
 parser.add_argument('-tie_weights', action='store_true',
@@ -96,10 +92,10 @@ parser.add_argument('-extra_shuffle', action="store_true",
                     shuffle and re-assign mini-batches""")
 parser.add_argument('-reinforce_rate', type=float, default=0.0,
                     help='Rate of using reinforcement learning during training')
-parser.add_argument('-reinforce_metrics', default='gleu',
-                    help='Metrics for reinforcement learning. Default = gleu')
 parser.add_argument('-reinforce_sampling_number', type=int, default=1,
                     help='Number of samples during reinforcement learning')
+parser.add_argument('-reinforce_metrics', default='gleu',
+                    help='Metrics for reinforcement learning. Default = gleu')
 # learning rate
 parser.add_argument('-learning_rate', type=float, default=1.0,
                     help="""Starting learning rate. If adagrad/adadelta/adam is
@@ -161,6 +157,46 @@ if opt.gpus:
     cuda.set_device(opt.gpus[0])
 
 torch.manual_seed(opt.seed)
+
+gradient_buffers = dict()
+
+def add_buffer(model):
+	
+	i = 0
+	for p in model.parameters():
+		i = i + 1
+		if p.grad is not None:
+			if gradient_buffers[i] is not None:
+				gradient_buffers[i].add_(p.grad.data)
+			else:
+				gradient_buffers[i] = p.grad.data.clone()
+			
+def init_buffer(model):
+	i = 0
+	for p in model.parameters():
+		i = i + 1
+		gradient_buffers[i] = None
+			
+def accumulate_buffer(model, n):
+	
+	i = 0
+	for p in model.parameters():
+		i = i + 1
+		#~ if gradient_buffers[i] 
+		if p.grad is not None:
+			if gradient_buffers[i] is not None:
+				p.grad.data.add_(gradient_buffers[i].div_(n))
+		elif gradient_buffers[i] is not None:
+			data = p.grad.data
+			data.div_(n)
+			p.grad = Variable(data)
+		
+	#~ pass
+	
+def zero_buffer():
+	for i in gradient_buffers:
+		if gradient_buffers[i] is not None:
+			gradient_buffers[i].zero_()
 
 def NMTCriterion(vocabSize):
     weight = torch.ones(vocabSize)
@@ -326,7 +362,7 @@ def sample(model, batch, dicts, eval=False):
 		print("\n")
 	
 
-def eval(model, data, criterion):
+def eval(model, data):
     total_loss = 0
     total_words = 0
     
@@ -335,12 +371,9 @@ def eval(model, data, criterion):
     for i in range(len(data)):
         # exclude original indices
         batch = data[i][:-1]
-        outputs , _ = model(batch)
+        loss, _, _ = model(batch, eval=True)
         # exclude <s> from targets
         targets = batch[1][1:]
-        outputs_flat = outputs.view(-1, outputs.size(-1))
-        targets_flat = targets.view(-1)
-        loss = criterion(outputs_flat, targets_flat)
         total_loss += loss
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
 
@@ -348,9 +381,18 @@ def eval(model, data, criterion):
     return total_loss / total_words
 
 
+def duplicateBatch(batch, volatile=False):
+	
+		
+		src = Variable(batch[0][0].data, volatile=volatile)
+		tgt = Variable(batch[1].data, volatile=volatile)
+		length = Variable(batch[0][1].data, volatile=volatile)
+		#~ indices = batch[2]
+		
+		return (src, length), tgt
 
 
-def trainModel(model, trainData, validData, dataset, optim, criterion):
+def trainModel(model, trainData, validData, dataset, optim):
     
     model.train()
     
@@ -373,11 +415,24 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
         report_src_words, report_tgt_words = 0, 0
         start = time.time()
         nSamples = len(trainData)
-        for i in range(nSamples):
+        
+        i = 0 # This is the sample index
+        counter = 0 # This is the counter for each sample
+        last_batch = None
+        greedy_reward = 0
+        
+        train_mode = 'xe'
+        
+        #~ for i in range(nSamples):
+        while i < nSamples:
 
             batchIdx = batchOrder[i] if epoch > opt.curriculum else i
             # Exclude original indices.
+            #~ if counter == 0 :
             batch = trainData[batchIdx][:-1]
+            #~ else:
+							#~ batch = last_batch
+            #~ last_batch = batch
             batch_size = batch[1].size(1)
             # Exclude <s> from targets.
             targets = batch[1][1:]
@@ -385,19 +440,17 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
 
             model.zero_grad()
             
-            train_mode = 'xe'
-            if random.random() < opt.reinforce_rate:
-							train_mode = 'rf'
+            if counter == 0:
+							# important: only zero grad model at counter = 0
+							zero_buffer()
+							train_mode = 'xe'
+							if random.random() < opt.reinforce_rate:
+								train_mode = 'rf'
 						
 						# For Cross Entropy mode training
             if train_mode == 'xe':
-							# Loss is computed by nll criterion
-							outputs, _ = model(batch, mode=train_mode, timestep_group=opt.max_generator_batches)
-							
-							outputs_flat = outputs.view(-1, outputs.size(-1))
-							targets_flat = targets.view(-1)
-							
-							loss = criterion(outputs_flat, targets_flat)
+							# Loss is computed by nll already
+							loss, _, _ = model(batch, mode=train_mode)
 							loss_value = loss.data[0]
 							loss.div(batch_size).backward()
             
@@ -410,18 +463,28 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
 							total_words_xe += num_words
 							optim.step()
 							
+							counter = 100000
+							
 						# For reinforcement learning mode
             elif train_mode == 'rf':
 							ref = batch[1][1:]
 							# Monte-Carlo actions and greedy actions to be sampled
-							rl_actions, rl_lengths, greedy_actions, greedy_lengths = model(batch, mode=train_mode)
+							
+							#~ greedy_actions, greedy_lengths = None, None
+							
+							
+							# For the first sample, we also generate the greedy one
+							if counter == 0:
+								rl_actions, rl_lengths, greedy_actions, greedy_lengths = model(batch, mode=train_mode)
+								# Reward for samples from greedy search
+								greedy_reward = compute_score(greedy_actions, greedy_lengths, ref, dicts, batch_size) 
+							else:
+								#~ new_batch = duplicateBatch(batch)
+								rl_actions, rl_lengths = model(batch, mode=train_mode, gen_greedy=False)
 							
 							# reward for samples from stochastic function
 							sampled_reward = compute_score(rl_actions, rl_lengths, ref, dicts, batch_size) 
-							
-							# samples from greedy search
-							greedy_reward = compute_score(greedy_actions, greedy_lengths, ref, dicts, batch_size) 
-							
+								
 							# the REINFORCE reward to be the difference between MC and greedy
 							# should we manually divide rewards by batch size ? since we may have different batch size
 							rf_rewards = (sampled_reward - greedy_reward) / batch_size 
@@ -446,65 +509,93 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
 								model.saved_actions[t].reinforce(reward_t.unsqueeze(1))
 							
 							# We backward from stochastic actions, ignoring the gradOutputs
-							# Note: we don't have gradients here for the outputs of the network (stochastic actions)
 							torch.autograd.backward(model.saved_actions, [None for _ in model.saved_actions])
-							# Update the parameters and free the action list.	
-							optim.step()
+							# Free the action list.	
 							model.saved_actions = []
+							#~ optim.step()
+							add_buffer(model)
 							
-						
-            report_src_words += batch[0][1].data.sum()
-            report_tgt_words += num_words
+							# update only after the loop
+							counter = counter + 1
+							
+							if counter == opt.reinforce_sampling_number:
+								model.zero_grad()
+								accumulate_buffer(model, opt.reinforce_sampling_number)
+								optim.step()	
+							
+							
+							del model.saved_actions[:]
+							
+							del rl_actions
+							#~ if n == 0:
+								#~ del greedy_actions
+							#~ del rl_lengths
+							del rf_rewards
+							
+            repeat_flag = False
+            if counter >= opt.reinforce_sampling_number:
+							i = i + 1 # increase the indexing counter					 
+							counter = 0
+            else:
+							repeat_flag = True
+							
+            if not repeat_flag:
+							index = i - 1
+							report_src_words += batch[0][1].data.sum()
+							report_tgt_words += num_words
 
-            # Sample at the end of epoch (experimental):
-            if i % opt.sample_every == -1 % opt.sample_every:
-							sample(model, batch, dicts)
+							# Sample at the end of epoch (experimental):
+							if index % opt.sample_every == -1 % opt.sample_every:
+								sample(model, batch, dicts)
 
-            
-            if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
-                print(("Epoch %2d, %5d/%5d; ; ppl: %6.2f; lr: %1.6f; " +
-                       "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
-                      (epoch, i+1, len(trainData),
-                       math.exp(report_loss_xe / (report_tgt_words_xe + 1e-6)),
-                       optim.get_learning_rate(),
-                       report_src_words/(time.time()-start),
-                       report_tgt_words/(time.time()-start),
-                       time.time()-start_time))
+							
+							if index == 0 or (index % opt.log_interval == -1 % opt.log_interval):
+									print(("Epoch %2d, %5d/%5d; ; ppl: %6.2f; lr: %1.6f; " +
+												 "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
+												(epoch, index+1, len(trainData),
+												 math.exp(report_loss_xe / (report_tgt_words_xe + 1e-6)),
+												 optim.lr,
+												 report_src_words/(time.time()-start),
+												 report_tgt_words/(time.time()-start),
+												 time.time()-start_time))
 
-                report_loss_xe, report_tgt_words_xe = 0, 0
-                report_src_words = 0
-                report_tgt_words = 0
-                start = time.time()
-            
-            if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
-							valid_loss = eval(model, validData, criterion).data[0]
-							valid_ppl = math.exp(min(valid_loss, 100))
-							valid_bleu = eval_translate(model, dicts, opt.valid_src, opt.valid_tgt)
-							print('Validation perplexity: %g' % valid_ppl)
-							print('Validation BLEU: %.2f' % valid_bleu)
+									report_loss_xe, report_tgt_words_xe = 0, 0
+									report_src_words = 0
+									report_tgt_words = 0
+									start = time.time()
 							
-							model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
-                            else model.state_dict())
-							model_state_dict = {k: v for k, v in model_state_dict.items()}
-							
-							#  drop a checkpoint
-							ep = float(epoch) - 1 + (i + 1) / nSamples
-							checkpoint = {
-									'model': model_state_dict,
-									#~ 'generator': generator_state_dict,
-									'dicts': dataset['dicts'],
-									'opt': opt,
-									'epoch': ep,
-									'iteration' : i,
-									'batchOrder' : batchOrder,
-									'optim': optim
-							}
-							
-							file_name = '%s_ppl_%.2f_bleu_%.2f_e%.2f.pt'
-							print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, ep))
-							torch.save(checkpoint,
-												 file_name
-												 % (opt.save_model, valid_ppl, valid_bleu, ep))
+							if opt.save_every > 0 and index % opt.save_every == -1 % opt.save_every :
+								valid_loss = eval(model, validData).data[0]
+								valid_ppl = math.exp(min(valid_loss, 100))
+								valid_bleu = eval_translate(model, dicts, opt.valid_src, opt.valid_tgt)
+								print('Validation perplexity: %g' % valid_ppl)
+								print('Validation BLEU: %.2f' % valid_bleu)
+								
+								model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
+															else model.state_dict())
+								model_state_dict = {k: v for k, v in model_state_dict.items()}
+								
+								#  drop a checkpoint
+								ep = float(epoch) - 1 + (index + 1) / nSamples
+								checkpoint = {
+										'model': model_state_dict,
+										#~ 'generator': generator_state_dict,
+										'dicts': dataset['dicts'],
+										'opt': opt,
+										'epoch': ep,
+										'iteration' : index,
+										'batchOrder' : batchOrder,
+										'optim': optim
+								}
+								
+								file_name = '%s_ppl_%.2f_bleu_%.2f_e%.2f.pt'
+								print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, ep))
+								torch.save(checkpoint,
+													 file_name
+													 % (opt.save_model, valid_ppl, valid_bleu, ep))
+            #~ if counter >= opt.reinforce_sampling_number:
+							#~ i = i + 1 # increase the indexing counter					 
+							#~ counter = 0
         return total_loss_xe / (total_words_xe + 1e-6)
 
     for epoch in range(opt.start_epoch, opt.start_epoch + opt.epochs):
@@ -516,7 +607,7 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
         print('Train perplexity: %g' % train_ppl)
 
         #  (2) evaluate on the validation set
-        valid_loss = eval(model, validData, criterion).data[0]
+        valid_loss = eval(model, validData).data[0]
         valid_ppl = math.exp(min(valid_loss, 100))
         valid_bleu = eval_translate(model, dicts, opt.valid_src, opt.valid_tgt)
         print('Validation perplexity: %g' % valid_ppl)
@@ -528,10 +619,13 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
         model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
                             else model.state_dict())
         model_state_dict = {k: v for k, v in model_state_dict.items()}
-
+        #~ generator_state_dict = (model.generator.module.state_dict()
+                                #~ if len(opt.gpus) > 1
+                                #~ else model.generator.state_dict())
         #  (4) drop a checkpoint
         checkpoint = {
             'model': model_state_dict,
+            #~ 'generator': generator_state_dict,
             'dicts': dataset['dicts'],
             'opt': opt,
             'epoch': epoch,
@@ -617,6 +711,7 @@ def main():
         model.load_state_dict(checkpoint['model'])
         opt.start_epoch = checkpoint['epoch'] + 1
 		
+    model.criterion = criterion
 		
     if len(opt.gpus) >= 1:
         model.cuda()
@@ -666,7 +761,7 @@ def main():
 			 optim.start_decay = False
 		
     optim.set_parameters(model.parameters())
-		optim.set_learning_rate(opt.learning_rate)
+		
 		
 		# This doesn't work for me But still there in the main repo 
 		# So let's keep it here
@@ -676,18 +771,38 @@ def main():
 
     nParams = sum([p.nelement() for p in model.parameters()])
     print('* number of parameters: %d' % nParams)
+    init_buffer(model)
+    
     
     bleu_score = eval_translate(model, dicts, opt.valid_src, opt.valid_tgt)
     
-    valid_loss = eval(model, validData, criterion).data[0]
+    valid_loss = eval(model, validData).data[0]
     valid_ppl = math.exp(min(valid_loss, 100))
     print('* Initial BLEU score : %.2f' % bleu_score)
     print('* Initial Perplexity : %.2f' % valid_ppl)
     print(model)
     print('* Start training ... ')
-    trainModel(model, trainData, validData, dataset, optim, criterion)
+    trainModel(model, trainData, validData, dataset, optim)
 
 
 if __name__ == "__main__":
     main()
 
+#~ def memoryEfficientLoss(outputs, targets, crit, eval=False):
+    #~ # compute generations one piece at a time
+    #~ loss = 0 
+    #~ batch_size = targets.size(1)
+    #~ length = len(outputs)
+    #~ 
+    #~ outputs = Variable(outputs.data, requires_grad=(not eval), volatile=eval)
+#~ 
+    #~ # outputs is a list of distribution generated by the model
+    #~ targets_split = torch.split(targets, 1)
+    #~ outputs_split = torch.split(outputs, 1)
+    #~ for t, (out_t, target_t) in enumerate(zip(outputs_split, targets_split)):
+			#~ 
+			#~ if not eval:
+				#~ loss_t.div(batch_size).backward()
+				#~ 
+    #~ grad_output = None if outputs.grad is None else outputs.grad.data
+    #~ return loss, grad_output

@@ -184,7 +184,7 @@ class NMTModel(nn.Module):
 				# For input feeding initial output
 				init_output = self.make_init_decoder_output(context)
 
-				sampled, length = self.sample_from_context(context, init_output, enc_hidden, 
+				sampled, length, logprob = self.sample_from_context(context, init_output, enc_hidden, 
 																									init_input, argmax=argmax, max_length=max_length)
 				
 				return sampled, length
@@ -205,9 +205,17 @@ class NMTModel(nn.Module):
 				
 				sampled = []
 				
+				if not save:
+					context = Variable(context.data, volatile=True)
+					#~ hidden = Variable(hidden.data, volatile=True)
+					state = Variable(state.data, volatile=True)
+					input_t = Variable(input_t.data, volatile=True)
+				
 				tensor_check = None
 				
 				lengths = torch.Tensor(1, batch_size).fill_(max_length).type_as(input_t.data)
+				
+				accumulated_logprob = None
 				
 				for t in xrange(max_length):
 					# make a forward pass through the decoder
@@ -218,15 +226,27 @@ class NMTModel(nn.Module):
 					if argmax:
 						topv, sample = output.data.topk(1)
 						
+						
+						
 						input_t = Variable(sample.t())
 					else: # Stochastic sampling
-						sample = output.exp().multinomial()
+						#~ sample = output.exp().multinomial()
+						dist = output.exp()
 						
-						input_t = sample.t()
+						sample = torch.multinomial(dist, 1) # batch_size x 1
+						
+						
+						input_t = sample.t() # 1 x batch_size
+						
+					# log prob of the samples
+					logprob = output.index_select(1, input_t.squeeze(0))	# batch_size * 1 
 						
 					if save:
 						assert argmax==False
 						self.saved_actions.append(sample)
+					
+					if tensor_check is not None:
+						input_t.masked_fill(tensor_check, onmt.Constants.PAD)
 						
 					# condition to stop the sampling procedure
 					check = input_t.eq(onmt.Constants.EOS)
@@ -235,14 +255,27 @@ class NMTModel(nn.Module):
 						tensor_check  = check
 					else:
 						tensor_check += check
+						
+					break_signal = False
+					
+					if torch.sum(tensor_check.data) == batch_size:
+						break_signal = True
 					
 					input_t.masked_fill(tensor_check, onmt.Constants.PAD)
 					
+					logprob.masked_fill(tensor_check.squeeze(0), 0)
+					
+					if accumulated_logprob is None:
+						accumulated_logprob = logprob
+					else:
+						accumulated_logprob += logprob
+					
 					sampled.append(input_t)
 					# if all sentences are finished (reach EOS)
-					if tensor_check.sum().data[0] == batch_size:
+					if break_signal:
 						break
-									
+				
+				# gather the lengths of the samples						
 				lengths = [len(sampled) for i in xrange(batch_size)]
 			 
 				for i in xrange(batch_size):
@@ -255,12 +288,12 @@ class NMTModel(nn.Module):
 				# we concatenate them into one single Tensor 				
 				sampled = torch.cat(sampled, 0)
 				
-				return sampled, lengths
+				return sampled, lengths, accumulated_logprob
 		
 		
 		# Forward pass :
 		# Two (or mode) modes: Cross Entropy or Reinforce
-    def forward(self, input, eval=False, mode='xe', teacher_forcing_ratio = 1, max_length=50):
+    def forward(self, input, mode='xe', max_length=50, gen_greedy=True, timestep_group=8):
         src = input[0]
         tgt = input[1][:-1]  # exclude last target from inputs
         # Exclude <s> from targets for labels
@@ -284,38 +317,58 @@ class NMTModel(nn.Module):
         # Cross Entropy training:
         # Using teacher forcing and log-likelihood loss as normally
         if mode == 'xe':
-        
+					
+					hiddens, dec_hidden, _attn = self.decoder(tgt, enc_hidden,
+                                              context, init_output)
+					
+					# hiddens has size T * B * H
+					hiddens_split = torch.split(hiddens, timestep_group)
+					outputs = []
+					
+					# we group the computation for faster and more efficient GPU memory
+					for i, hidden_group in enumerate(hiddens_split):
+						
+						n_steps = hidden_group.size(0)
+						hidden_group = hidden_group.view(-1, hidden_group.size(2))
+						output_group = self.generator(hidden_group)
+						output_group = output_group.view(n_steps, -1, output_group.size(1))
+						outputs.append(output_group)
+					
+					# concatenate into one single tensor
+					outputs = torch.cat(outputs, 0)
+						
+					
 					# Here we loop over the input
-					for t, input_t in enumerate(tgt.split(1)):
-						
-						use_teacher_forcing = random.random() <= teacher_forcing_ratio
-						
-						
-						if not use_teacher_forcing and t > 1:
-							topv, topi = outputs[t-1].data.topk(1)
-							
-							input_t = Variable(topi.t())
-							
-						state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
-						
-						state = state.squeeze(0)
-						states.append(state)
-						
-						# from the state, compute the probability distribution
-						output = self.generator(state)
-						
-						outputs.append(output)
-			
-						# compute loss
-						loss_t = self.criterion(output, tgt_label[t])
-						
-						if t == 0:
-							loss = loss_t
-						else:
-							loss = loss + loss_t
+					#~ for t, input_t in enumerate(tgt.split(1)):
+						#~ 
+						#~ use_teacher_forcing = random.random() <= teacher_forcing_ratio
+						#~ 
+						#~ 
+						#~ if not use_teacher_forcing and t > 1:
+							#~ topv, topi = outputs[t-1].data.topk(1)
+							#~ 
+							#~ input_t = Variable(topi.t())
+							#~ 
+						#~ state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
+						#~ 
+						#~ state = state.squeeze(0)
+						#~ states.append(state)
+						#~ 
+						#~ # from the state, compute the probability distribution
+						#~ output = self.generator(state)
+						#~ 
+						#~ outputs.append(output)
+			#~ 
+						#~ # compute loss
+						#~ loss_t = self.criterion(output, tgt_label[t])
+						#~ 
+						#~ if t == 0:
+							#~ loss = loss_t
+						#~ else:
+							#~ loss = loss + loss_t
 					
 					
-					return loss, outputs, states
+					return outputs, states
 				
 				# Reinforcement learning as in
 				# Self critical Reinforcement Learning
@@ -324,14 +377,19 @@ class NMTModel(nn.Module):
 					init_input = self.make_init_input(src)
 					
 					# save=True so that the stochastic actions will be saved for the backward pass
-					rl_samples, lengths = self.sample_from_context(context, init_output, enc_hidden, 
+					rl_samples, lengths, logprobs = self.sample_from_context(context, init_output, enc_hidden, 
 																									init_input, argmax=False, max_length=min(length + 2, 50), save=True)
-					# the baseline is the samples from greedy search
-					greedy_samples, greedy_lengths = self.sample_from_context(context, init_output, enc_hidden, 
-																									init_input, argmax=True, max_length=min(length + 2, 50)) 																				
-										
+					# By default: the baseline is the samples from greedy search
 					
-					return rl_samples, lengths, greedy_samples, greedy_lengths
+					if gen_greedy:
+						greedy_samples, greedy_lengths, _ = self.sample_from_context(context, init_output, enc_hidden, 
+																										init_input, argmax=True, max_length=min(length + 2, 50)) 																				
+											
+						#~ greedy_samples = greedy_samples.detach()
+						#~ greedy_lengths = greedy_lengths.detach()
+						return rl_samples, lengths, greedy_samples, greedy_lengths
+					else:
+						return rl_samples, lengths
         
         
 

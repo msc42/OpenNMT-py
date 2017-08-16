@@ -50,3 +50,12 @@ class Optim(object):
 
         self.last_ppl = ppl
         self.optimizer.param_groups[0]['lr'] = self.lr
+		
+    def get_learning_rate(self):
+				
+				return self.optimizer.param_groups[0]['lr']
+				
+    def set_learning_rate(self, lr):
+				
+				self.lr = lr
+				self.optimizer.param_groups[0]['lr'] = lr
