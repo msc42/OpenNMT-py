@@ -233,9 +233,9 @@ def main():
 		uniqSrcLangs = list(OrderedDict.fromkeys(srcLangs))
 		uniqTgtLangs = list(OrderedDict.fromkeys(tgtLangs))
 		
-		dicts['srcLangs'] = srcLangs
-		dicts['tgtLangs'] = tgtLangs
-		print(uniqSrcLangs, uniqTgtLangs)
+		dicts['srcLangs'] = uniqSrcLangs
+		dicts['tgtLangs'] = uniqTgtLangs
+		#~ print(uniqSrcLangs, uniqTgtLangs)
 		
 		for lang in langs:
 			if lang not in dicts['vocabs']:
@@ -261,6 +261,7 @@ def main():
 		train['src'] = list()
 		train['tgt'] = list()
 		dicts['setIDs'] = list()
+		dicts['setLangs'] = list()
 		
 		valid = {}
 		valid['src'] = list()
@@ -269,6 +270,7 @@ def main():
 		for i in range(dicts['nSets']):
 			
 			dicts['setIDs'].append([uniqSrcLangs.index(srcLangs[i]), uniqTgtLangs.index(tgtLangs[i])])
+			dicts['setLangs'].append([srcLangs[i], tgtLangs[i]])
 			
 			srcID = dicts['setIDs'][i][0]
 			tgtID = dicts['setIDs'][i][1]

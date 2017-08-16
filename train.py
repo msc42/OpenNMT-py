@@ -318,12 +318,13 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 						# Logging information
 						if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
 								avgTrainLoss = averagePPL(report_loss, report_tgt_words)
-								logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed; ppl: %6.2f " %
+								logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed; ppl: %6.2f; lr: %.6f" %
 												(epoch, i+1, nSamples,
 												 sum(report_src_words)/(time.time()-start),
 												 sum(report_tgt_words)/(time.time()-start),
 												 time.time()-start_time,
-												 avgTrainLoss))
+												 avgTrainLoss,
+												 optim.get_learning_rate()))
 												 
 								for j in xrange(len(setIDs)):
 									#~ ppl = math.exp(report_loss[j] / (report_tgt_words[j] + 1e-6))
@@ -358,7 +359,7 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 																			if len(opt.gpus) > 1
 																			else model.generator.state_dict())
 							#  drop a checkpoint
-							ep = float(epoch) - 1 + (i + 1) / nSamples
+							ep = float(epoch) - 1.0 + float(i + 1.0) / float(nSamples)
 							checkpoint = {
 									'model': model_state_dict,
 									'generator': generator_state_dict,
@@ -386,7 +387,7 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 		
     #~ train_loss = trainEpoch(0)
 		
-    for epoch in range(opt.start_epoch, opt.epochs + 1):
+    for epoch in range(opt.start_epoch, opt.start_epoch + opt.epochs):
         print('')
 
         #  (1) train for one epoch on the training set
@@ -425,8 +426,8 @@ def trainModel(model, trainSets, validSets, dataset, optim):
         
 				
         #~ valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
-        file_name = '%s_ppl_%.2f_e%.2f.pt'
-        print('Writing to %s_ppl_%.2f_e%.2f.pt' % (opt.save_model, avgDevPpl, epoch))
+        file_name = '%s_ppl_%.2f_e%d.pt'
+        print('Writing to %s_ppl_%.2f_e%d	.pt' % (opt.save_model, avgDevPpl, epoch))
         torch.save(checkpoint,
 									 file_name
 									 % (opt.save_model, avgDevPpl, epoch))
@@ -526,10 +527,11 @@ def main():
         print(optim)
 
     optim.set_parameters(model.parameters())
+    optim.set_learning_rate(opt.learning_rate)
 
-    if opt.train_from or opt.train_from_state_dict:
-        optim.optimizer.load_state_dict(
-            checkpoint['optim'].optimizer.state_dict())
+    #~ if opt.train_from or opt.train_from_state_dict:
+        #~ optim.optimizer.load_state_dict(
+            #~ checkpoint['optim'].optimizer.state_dict())
 
     nParams = sum([p.nelement() for p in model.parameters()])
     print('* number of parameters: %d' % nParams)
