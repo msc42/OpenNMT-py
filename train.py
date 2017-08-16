@@ -359,7 +359,11 @@ def trainModel(model, trainSets, validSets, dataset, optim):
 																			if len(opt.gpus) > 1
 																			else model.generator.state_dict())
 							#  drop a checkpoint
+<<<<<<< HEAD
 							ep = float(epoch) - 1.0 + float(i + 1.0) / float(nSamples)
+=======
+							ep = float(epoch) - 1 + float(i + 1) / nSamples
+>>>>>>> b2f2b1a0e1d819ff0506fdd6061dffcc5f252d3d
 							checkpoint = {
 									'model': model_state_dict,
 									'generator': generator_state_dict,
