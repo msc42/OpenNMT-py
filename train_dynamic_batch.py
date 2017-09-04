@@ -11,7 +11,7 @@ from torch.autograd import Variable
 import math
 import time
 
-parser = argparse.ArgumentParser(description='train.py')
+parser = argparse.ArgumentParser(description='train_dynamic_batch.py')
 onmt.Markdown.add_md_help_argument(parser)
 
 # Data options
@@ -28,7 +28,8 @@ parser.add_argument('-train_from_state_dict', default='', type=str,
 parser.add_argument('-train_from', default='', type=str,
                     help="""If training from a checkpoint then this is the
                     path to the pretrained model.""")
-
+parser.add_argument('-continue', action='store_true',
+                    help='Continue the progress (epoch and batchOrder)')
 # Model options
 
 parser.add_argument('-layers', type=int, default=2,
@@ -54,6 +55,8 @@ parser.add_argument('-encoder_type', default='text',
                     help="Type of encoder to use. Options are [text|img].")
 parser.add_argument('-batch_size', type=int, default=64,
                     help='Maximum batch size')
+parser.add_argument('-batch_size_split', type=int, default=64,
+                    help='The size of the splitted mini-batch')
 parser.add_argument('-max_generator_batches', type=int, default=32,
                     help="""Maximum batches of words in a sequence to run
                     the generator on in parallel. Higher is faster, but uses
@@ -138,40 +141,66 @@ if opt.gpus:
 
 torch.manual_seed(opt.seed)
 
+# split the mini-batch (large) into smaller ones
+def splitMiniBatch(batch):
+    
+    splittedBatches = []
+    
+    src = batch[0][0].data
+    tgt = batch[1].data
+    length = batch[0][1].data
+    volatile = batch[1].volatile
+    
+    src_splits = torch.split(src, opt.batch_size_split, dim=1)
+    tgt_splits = torch.split(tgt, opt.batch_size_split, dim=1)
+    length_splits = torch.split(length, opt.batch_size_split, dim=1)
+    
+    for i, (src_new, tgt_new, length_new) in enumerate(zip(src_splits, tgt_splits, length_splits)):
+        
+        src_var = Variable(src_new.contiguous(), volatile=volatile)
+        tgt_var = Variable(tgt_new.contiguous(), volatile=volatile)
+        length_var = Variable(length_new, volatile=volatile)
+        
+        batch_split = ( (src_var, length_var), tgt_var )
+        
+        splittedBatches.append(batch_split)
+    
+    return splittedBatches
+    
+
 def averagePPL(losses, counts):
-	
-	#~ ppls = 
-	ppls = []
-	#~ print(losses)
-	#~ print(counts)
-	#~ for (loss, count) in enumerate(zip(losses, counts)):
-	for i in xrange(len(counts)):
-		ppl = math.exp(losses[i] / (counts[i] + 1e-6))
-		ppls.append(ppl)
-	return sum(ppls) / len(ppls)
+    
+    #~ ppls = 
+    ppls = []
+    #~ print(losses)
+    #~ print(counts)
+    #~ for (loss, count) in enumerate(zip(losses, counts)):
+    for i in xrange(len(counts)):
+        ppl = math.exp(losses[i] / (counts[i] + 1e-6))
+        ppls.append(ppl)
+    return sum(ppls) / len(ppls)
 
 def NMTCriterion(dicts):
-	
-	crits = dict()
-	for i in dicts:
-		vocabSize = dicts[i].size()
-		
-		weight = torch.ones(vocabSize)
-		weight[onmt.Constants.PAD] = 0
-		crit = nn.NLLLoss(weight, size_average=False)
-		if opt.gpus:
-			crit.cuda()
-		
-		crits[i] = crit
-	
-	return crits
+    
+    crits = dict()
+    for i in dicts:
+        vocabSize = dicts[i].size()
+        
+        weight = torch.ones(vocabSize)
+        weight[onmt.Constants.PAD] = 0
+        crit = nn.NLLLoss(weight, size_average=False)
+        if opt.gpus:
+            crit.cuda()
+        
+        crits[i] = crit
+    
+    return crits
 
-def memoryEfficientLoss(outputs, targets, generator, crit, eval=False):
+def memoryEfficientLoss(outputs, targets, generator, crit, batch_size, eval=False):
     # compute generations one piece at a time
     loss = 0
     outputs = Variable(outputs.data, requires_grad=(not eval), volatile=eval)
 
-    batch_size = outputs.size(1)
     outputs_split = torch.split(outputs, opt.max_generator_batches)
     targets_split = torch.split(targets, opt.max_generator_batches)
     for i, (out_t, targ_t) in enumerate(zip(outputs_split, targets_split)):
@@ -187,37 +216,44 @@ def memoryEfficientLoss(outputs, targets, generator, crit, eval=False):
 
 
 def eval(model, criterions, data, setIDs):
-		model.eval()
-		losses = []
-		
-		for sid in data: # sid = setid
-			dset = data[sid]
-			total_loss = 0
-			total_words = 0
-			
-			model.switchLangID(setIDs[sid][0], setIDs[sid][1])
-			model.switchPairID(sid)
-			
-			# each target language requires a criterion, right ?
-			criterion =	criterions[setIDs[sid][1]]	
-			for i in range(len(dset)):
-					# exclude original indices
-					batch = dset[i][:-1]
-					outputs = model(batch)
-					# exclude <s> from targets
-					targets = batch[1][1:]
-					loss, _ = memoryEfficientLoss(
-									outputs, targets, model.generator, criterion, eval=True)
-					total_loss += loss
-					total_words += targets.data.ne(onmt.Constants.PAD).sum()
-			
-			loss = total_loss / total_words
-			losses.append(loss)
-			
-		
-		
-		model.train()
-		return losses
+        model.eval()
+        losses = []
+        
+        for sid in data: # sid = setid
+            dset = data[sid]
+            total_loss = 0
+            total_words = 0
+            
+            model.switchLangID(setIDs[sid][0], setIDs[sid][1])
+            model.switchPairID(sid)
+            
+            # each target language requires a criterion, right ?
+            criterion =    criterions[setIDs[sid][1]]    
+            for i in range(len(dset)):
+                    # exclude original indices
+                    batch = dset[i][:-1]
+                    
+                    batch_size = batch[1].size(1)
+                    
+                    splitted_batches = splitMiniBatch(batch)
+                    
+                    for minibatch in splitted_batches:
+                    
+                        outputs = model(minibatch)
+                        # exclude <s> from targets
+                        targets = minibatch[1][1:]
+                        loss, _ = memoryEfficientLoss(
+                                        outputs, targets, model.generator, criterion, batch_size, eval=True)
+                        total_loss += loss
+                        total_words += targets.data.ne(onmt.Constants.PAD).sum()
+            
+            loss = total_loss / total_words
+            losses.append(loss)
+            
+        
+        
+        model.train()
+        return losses
 
 
 def trainModel(model, trainSets, validSets, dataset, optim):
@@ -238,9 +274,9 @@ def trainModel(model, trainSets, validSets, dataset, optim):
         # Shuffle mini batch order.
         
         if not batchOrder:
-					batchOrder = dict()
-					for i in trainSets:
-						batchOrder[i] = torch.randperm(len(trainSets[i]))
+                    batchOrder = dict()
+                    for i in trainSets:
+                        batchOrder[i] = torch.randperm(len(trainSets[i]))
 
         total_loss, total_words = dict(), dict()
         report_loss, report_tgt_words = dict(), []
@@ -248,11 +284,11 @@ def trainModel(model, trainSets, validSets, dataset, optim):
         start = time.time()
         
         for i in trainSets:
-					total_loss[i] = 0
-					total_words[i] = 0
-					report_loss[i] = 0
-					report_tgt_words.append(0)
-					report_src_words.append(0)
+                    total_loss[i] = 0
+                    total_words[i] = 0
+                    report_loss[i] = 0
+                    report_tgt_words.append(0)
+                    report_src_words.append(0)
         
         dataSizes = [len(trainSets[i]) for i in trainSets]
         nSamples = sum(dataSizes)
@@ -264,131 +300,145 @@ def trainModel(model, trainSets, validSets, dataset, optim):
         sampleDist = torch.Tensor(len(setIDs))
         iterators = dict()
         for i in xrange(len(setIDs)):
-					sampleDist[i] = len(trainSets[i])
-					iterators[i] = -1
+                    sampleDist[i] = len(trainSets[i])
+                    iterators[i] = -1
         sampleDist = sampleDist / torch.sum(sampleDist)
 
         for i in range(nSamples):
-						
-						sampledSet = -1
-						while True:
-							# if the sampled set is full then we re-sample 
-							# to ensure that in one epoch we read each example once
-							sampledSet = int(torch.multinomial(sampleDist, 1)[0])
-							if iterators[sampledSet] + 1 < dataSizes[sampledSet]:
-								break
-						
-						iterators[sampledSet] += 1 
-						
-						# Get the batch index from batch order
-						batchIdx = batchOrder[sampledSet][iterators[sampledSet]] if epoch > opt.curriculum else iterators[sampledSet]
-						
-						# Get the batch
-						batch = trainSets[sampledSet][batchIdx][:-1]
-						
-						# And switch the model to the desired language mode
-						model.switchLangID(setIDs[sampledSet][0], setIDs[sampledSet][1])
-						model.switchPairID(sampledSet)
-						
-						# Do forward to the newly created graph
-						model.zero_grad()
-						outputs = model(batch)
-						
-						# Exclude <s> from targets.
-						targets = batch[1][1:]
-            # The criterion is for the target language side
-						criterion = criterions[setIDs[sampledSet][1]]
+                        
+            sampledSet = -1
+            while True:
+                # if the sampled set is full then we re-sample 
+                # to ensure that in one epoch we read each example once
+                sampledSet = int(torch.multinomial(sampleDist, 1)[0])
+                if iterators[sampledSet] + 1 < dataSizes[sampledSet]:
+                    break
             
-						loss, gradOutput = memoryEfficientLoss(
-										outputs, targets, model.generator, criterion)
-						
-						outputs.backward(gradOutput)
-						
-						# Update the parameters.
-						optim.step()
+            iterators[sampledSet] += 1 
+            
+            # Get the batch index from batch order
+            batchIdx = batchOrder[sampledSet][iterators[sampledSet]] if epoch > opt.curriculum else iterators[sampledSet]
+            
+            # Get the batch
+            batch = trainSets[sampledSet][batchIdx][:-1]
+            
+            # Important: we have to use this batch size, not the splitted batch size
+            batch_size = batch[1].size(1)
+            
+            splittedBatches = splitMiniBatch(batch)
+            
+            # And switch the model to the desired language mode
+            model.switchLangID(setIDs[sampledSet][0], setIDs[sampledSet][1])
+            model.switchPairID(sampledSet)
+            
+            # Do forward to the newly created graph
+            model.zero_grad()
+            
+            # The criterion is for the target language side
+            criterion = criterions[setIDs[sampledSet][1]]
+            
+            loss = 0
+            num_words = 0 
+            
+            for mini_batch in splittedBatches:
+                
+                outputs = model(mini_batch)
+                targets = mini_batch[1][1:]
+                num_words += targets.data.ne(onmt.Constants.PAD).sum()
+                
+                loss_b, gradOutput = memoryEfficientLoss(
+                        outputs, targets, model.generator, criterion, batch_size)
+                loss += loss_b
+                
+                outputs.backward(gradOutput)
+                
+                del mini_batch
+            
+            # Update the parameters.
+            optim.step()
 
-						# Statistics for the current set
-						num_words = targets.data.ne(onmt.Constants.PAD).sum()
-						report_loss[sampledSet] += loss
-						report_tgt_words[sampledSet] += num_words
-						report_src_words[sampledSet] += batch[0][1].data.sum()
-						total_loss[sampledSet] += loss
-						total_words[sampledSet] += num_words
+            # Statistics for the current set
+            
+            report_loss[sampledSet] += loss
+            report_tgt_words[sampledSet] += num_words
+            report_src_words[sampledSet] += batch[0][1].data.sum()
+            total_loss[sampledSet] += loss
+            total_words[sampledSet] += num_words
 
-						# Logging information
-						if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
-								avgTrainLoss = averagePPL(report_loss, report_tgt_words)
-								logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed; ppl: %6.2f; lr: %.6f" %
-												(epoch, i+1, nSamples,
-												 sum(report_src_words)/(time.time()-start),
-												 sum(report_tgt_words)/(time.time()-start),
-												 time.time()-start_time,
-												 avgTrainLoss,
-												 optim.get_learning_rate()))
-												 
-								for j in xrange(len(setIDs)):
-									#~ ppl = math.exp(report_loss[j] / (report_tgt_words[j] + 1e-6))
-									#~ setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][j])
-									#~ pplLog = ("%s : %6.2f ;" % (setLangs, ppl))
-									#~ logOut = logOut + pplLog
-									
-									report_loss[j] = 0
-									report_tgt_words[j] = 0
-									report_src_words[j] = 0
-									
-								print(logOut)
-								start = time.time()	
-							
+            # Logging information
+            if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
+                avgTrainLoss = averagePPL(report_loss, report_tgt_words)
+                logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed; ppl: %6.2f; lr: %.6f" %
+                                (epoch, i+1, nSamples,
+                                 sum(report_src_words)/(time.time()-start),
+                                 sum(report_tgt_words)/(time.time()-start),
+                                 time.time()-start_time,
+                                 avgTrainLoss,
+                                 optim.get_learning_rate()))
+                                 
+                for j in xrange(len(setIDs)):
+                    #~ ppl = math.exp(report_loss[j] / (report_tgt_words[j] + 1e-6))
+                    #~ setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][j])
+                    #~ pplLog = ("%s : %6.2f ;" % (setLangs, ppl))
+                    #~ logOut = logOut + pplLog
+                    
+                    report_loss[j] = 0
+                    report_tgt_words[j] = 0
+                    report_src_words[j] = 0
+                    
+                print(logOut)
+                start = time.time()    
+                            
                 
             # Saving checkpoints with validation perplexity
-						if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
-							valid_losses = eval(model, criterions, validSets, setIDs)
-							valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
-							#~ valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
-							for i in xrange(len(setIDs)):
-								setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
-								print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
-							
-							
-							avgDevPpl = sum(valid_ppl) / len(valid_ppl)
-							model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
-                            else model.state_dict())
-							model_state_dict = {k: v for k, v in model_state_dict.items()
-																	if 'generator' not in k}
-							generator_state_dict = (model.generator.module.state_dict()
-																			if len(opt.gpus) > 1
-																			else model.generator.state_dict())
-							#  drop a checkpoint
+            if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
+                valid_losses = eval(model, criterions, validSets, setIDs)
+                valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
+                #~ valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
+                for i in xrange(len(setIDs)):
+                    setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
+                    print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
+                
+                
+                avgDevPpl = sum(valid_ppl) / len(valid_ppl)
+                model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
+                else model.state_dict())
+                model_state_dict = {k: v for k, v in model_state_dict.items()
+                                                        if 'generator' not in k}
+                generator_state_dict = (model.generator.module.state_dict()
+                                                                if len(opt.gpus) > 1
+                                                                else model.generator.state_dict())
+                #  drop a checkpoint
 
-							ep = float(epoch) - 1.0 + float(i + 1.0) / float(nSamples)
+                ep = float(epoch) - 1 + (i + 1) / nSamples
 
-							checkpoint = {
-									'model': model_state_dict,
-									'generator': generator_state_dict,
-									'dicts': dataset['dicts'],
-									'opt': opt,
-									'epoch': ep,
-									'iteration' : i,
-									'batchOrder' : batchOrder,
-									'optim': optim
-							}
-							
-							file_name = '%s_ppl_%.2f_e%.2f.pt'
-							#~ valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
-							print('Writing to %s_ppl_%.2f_e%.2f.pt' % (opt.save_model, avgDevPpl, ep))
-							torch.save(checkpoint,
-												 file_name
-												 % (opt.save_model, avgDevPpl, ep))
+                checkpoint = {
+                        'model': model_state_dict,
+                        'generator': generator_state_dict,
+                        'dicts': dataset['dicts'],
+                        'opt': opt,
+                        'epoch': ep,
+                        'iteration' : i,
+                        'batchOrder' : batchOrder,
+                        'optim': optim
+                }
+                
+                file_name = '%s_ppl_%.2f_e%.2f.pt'
+                #~ valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
+                print('Writing to %s_ppl_%.2f_e%.2f.pt' % (opt.save_model, avgDevPpl, ep))
+                torch.save(checkpoint,
+                                     file_name
+                                     % (opt.save_model, avgDevPpl, ep))
         return [total_loss[j] / total_words[j] for j in xrange(len(setIDs))]
-		
+        
     valid_losses = eval(model, criterions, validSets, setIDs)
     valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
     for i in xrange(len(setIDs)):
-			setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
-			print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
-		
+            setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
+            print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
+        
     #~ train_loss = trainEpoch(0)
-		
+        
     for epoch in range(opt.start_epoch, opt.start_epoch + opt.epochs):
         print('')
 
@@ -396,14 +446,14 @@ def trainModel(model, trainSets, validSets, dataset, optim):
         train_losses = trainEpoch(epoch)
         train_ppl = [math.exp(min(train_loss, 100)) for train_loss in train_losses]
         for i in xrange(len(setIDs)):
-					print('Training perplexity for set %d : %g' % (i, train_ppl[i]))
+                    print('Training perplexity for set %d : %g' % (i, train_ppl[i]))
 
         #  (2) evaluate on the validation set
         valid_losses = eval(model, criterions, validSets, setIDs)
         valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
         avgDevPpl = sum(valid_ppl) / len(valid_ppl)
         for i in xrange(len(setIDs)):
-					print('Validation perplexity for set %d : %g' % (i, valid_ppl[i])) 
+                    print('Validation perplexity for set %d : %g' % (i, valid_ppl[i])) 
         #  (3) update the learning rate
         #~ optim.updateLearningRate(valid_ppl, epoch)
 
@@ -426,13 +476,13 @@ def trainModel(model, trainSets, validSets, dataset, optim):
             'optim': optim
         }
         
-				
+                
         #~ valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
         file_name = '%s_ppl_%.2f_e%d.pt'
         print('Writing to %s_ppl_%.2f_e%d.pt' % (opt.save_model, avgDevPpl, epoch))
         torch.save(checkpoint,
-									 file_name
-									 % (opt.save_model, avgDevPpl, epoch))
+                                     file_name
+                                     % (opt.save_model, avgDevPpl, epoch))
 
 
 def main():
@@ -452,20 +502,20 @@ def main():
     nSets = dicts['nSets']
     print(' * Vocabulary sizes: ')
     for lang in dicts['langs']:
-			print(' * ' + lang + ' = %d' % dicts['vocabs'][lang].size())
+            print(' * ' + lang + ' = %d' % dicts['vocabs'][lang].size())
 
     trainSets = dict()
     validSets = dict()
     for i in xrange(nSets):
       trainSets[i] = onmt.Dataset(dataset['train']['src'][i],
                              dataset['train']['tgt'][i], opt.batch_size, opt.gpus)
-			
+            
       validSets[i] = onmt.Dataset(dataset['valid']['src'][i],
                              dataset['valid']['tgt'][i], opt.batch_size, opt.gpus)
       
       print(' * number of training sentences for set %d: %d' %
           (i, len(dataset['train']['src'][i])))
-		
+        
 
     print(' * maximum batch size. %d' % opt.batch_size)
 #~ 
@@ -494,6 +544,7 @@ def main():
         model.load_state_dict(checkpoint['model'])
         generator.load_state_dict(checkpoint['generator'])
         opt.start_epoch = int(math.floor(checkpoint['epoch'] + 1))
+        del checkpoint['model'] # to save memory 
 
     if len(opt.gpus) >= 1:
         model.cuda()
@@ -509,14 +560,12 @@ def main():
     model.generator = generator
     
     if opt.share_embedding:
-			model.shareEmbedding(dicts)
+            model.shareEmbedding(dicts)
 
     if not opt.train_from_state_dict and not opt.train_from:
         for p in model.parameters():
             p.data.uniform_(-opt.param_init, opt.param_init)
-#~ 
-        #~ encoder.load_pretrained_vectors(opt)
-        #~ decoder.load_pretrained_vectors(opt)
+
 
         optim = onmt.Optim(
             opt.optim, opt.learning_rate, opt.max_grad_norm,
@@ -537,6 +586,8 @@ def main():
 
     nParams = sum([p.nelement() for p in model.parameters()])
     print('* number of parameters: %d' % nParams)
+    
+   
 
     trainModel(model, trainSets, validSets, dataset, optim)
 

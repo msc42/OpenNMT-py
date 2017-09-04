@@ -4,6 +4,8 @@ import torch.nn as nn
 import torch
 from torch.autograd import Variable
 
+# Ensemble decoding
+
 
 def loadImageLibs():
     "Conditional import of torch image libs."
@@ -58,10 +60,10 @@ class Translator(object):
         
         pair = -1
         for i, sid in enumerate(setIDs):
-					if sid[0] == srcID and sid[1] == tgtID:
-						pair = i
-						break
-						
+            if sid[0] == srcID and sid[1] == tgtID:
+                pair = i
+                break
+                        
         assert pair >= 0, "Cannot find any language pair with your provided src and tgt id"
         print(" * Translating with pair %i " % pair)
         print(srcID, tgtID)

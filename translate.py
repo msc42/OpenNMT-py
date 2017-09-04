@@ -77,7 +77,7 @@ def main():
     
     # Always pick n_best
     opt.n_best = opt.beam_size
-		
+        
     translator = onmt.Translator(opt)
 
     outF = open(opt.output, 'w')
@@ -113,15 +113,15 @@ def main():
                                                                tgtBatch)
         
         if opt.normalize:
-					predBatch_ = []
-					predScore_ = []
-					for bb, ss in zip(predBatch, predScore):
-							ss_ = [s_/numpy.maximum(1., len(b_)) for b_,s_ in zip(bb,ss)]
-							sidx = numpy.argsort(ss_)[::-1]
-							predBatch_.append([bb[s] for s in sidx])
-							predScore_.append([ss_[s] for s in sidx])
-					predBatch = predBatch_
-					predScore = predScore_
+            predBatch_ = []
+            predScore_ = []
+            for bb, ss in zip(predBatch, predScore):
+                    ss_ = [s_/numpy.maximum(1., len(b_)) for b_,s_ in zip(bb,ss)]
+                    sidx = numpy.argsort(ss_)[::-1]
+                    predBatch_.append([bb[s] for s in sidx])
+                    predScore_.append([ss_[s] for s in sidx])
+            predBatch = predBatch_
+            predScore = predScore_
                                                               
         predScoreTotal += sum(score[0] for score in predScore)
         predWordsTotal += sum(len(x[0]) for x in predBatch)
@@ -129,33 +129,24 @@ def main():
             goldScoreTotal += sum(goldScore)
             goldWordsTotal += sum(len(x) for x in tgtBatch)
             
-        
-        
-        #~ scores = torch.Tensor(len(predBatch)
-        
-        #~ for b in range(len(predBatch)):
-					#~ scores[b] = predScore[b]
-					
-					#~ if opt.normalize:
-						#~ scores[b] = scores[b] / (len(predBatch[b][0]) + 1)
 
         for b in range(len(predBatch)):
-						# Pred Batch always have n-best outputs  
+                        # Pred Batch always have n-best outputs  
             #~ scores = torch.Tensor(len(predBatch[b]))
             #~ for n in range(opt.n_best):
-							#~ scores[n] = predScore[b][n]
-							#~ if opt.normalize:
-								#~ scores[n] = scores[n] / ( len(predBatch[b][n]) + 1)
-						#~ 
+                            #~ scores[n] = predScore[b][n]
+                            #~ if opt.normalize:
+                                #~ scores[n] = scores[n] / ( len(predBatch[b][n]) + 1)
+                        #~ 
             #~ sorted_scores, sorted_index = torch.sort(scores, 0, True)
             #~ bestSent = predBatch[b][sorted_index[0]]
             #~ bestIndex = sorted_index[0]
             count += 1
-						# Best sentence = having highest log prob
+                        # Best sentence = having highest log prob
 
             if not opt.print_nbest:
-							outF.write(" ".join(predBatch[b][0]) + '\n')
-							outF.flush()
+                outF.write(" ".join(predBatch[b][0]) + '\n')
+                outF.flush()
 
             if opt.verbose:
                 srcSent = ' '.join(srcBatch[b])
@@ -175,8 +166,8 @@ def main():
                 if opt.print_nbest :
                     print('\nBEST HYP:')
                     for n in range(opt.n_best):
-												idx = sorted_index[n]
-												print("[%.4f] %s" % (predScore[b][idx],
+                                                idx = sorted_index[n]
+                                                print("[%.4f] %s" % (predScore[b][idx],
                                              " ".join(predBatch[b][idx])))
 
                 print('')
