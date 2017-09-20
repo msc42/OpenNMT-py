@@ -7,6 +7,7 @@ import onmt.modules
 from onmt.metrics.gleu import sentence_gleu
 from onmt.metrics.sbleu import sentence_bleu
 from onmt.metrics.bleu import moses_multi_bleu
+from onmt.utils import split_batch
 import argparse
 import torch
 import torch.nn as nn
@@ -39,7 +40,8 @@ parser.add_argument('-train_from_state_dict', default='', type=str,
 parser.add_argument('-train_from', default='', type=str,
                     help="""If training from a checkpoint then this is the
                     path to the pretrained model.""")
-
+parser.add_argument('-balance_batch', default=1, type=int,
+                    help="""balance mini batches (same source sentence length)""")
 # Model options
 
 parser.add_argument('-layers', type=int, default=2,
@@ -65,6 +67,8 @@ parser.add_argument('-encoder_type', default='text',
                     help="Type of encoder to use. Options are [text|img].")
 parser.add_argument('-batch_size', type=int, default=64,
                     help='Maximum batch size')
+parser.add_argument('-computational_batch_size', type=int, default=-1,
+                    help='Maximum batch size for computation. By default it is the same as batch size. But we can split the large minibatch to fit in the GPU.')
 parser.add_argument('-max_generator_batches', type=int, default=32,
                     help="""Maximum batches of words in a sequence to run
                     the generator on in parallel. Higher is faster, but uses
@@ -137,7 +141,7 @@ parser.add_argument('-log_interval', type=int, default=100,
                     help="Print stats at this interval.")
 parser.add_argument('-save_every', type=int, default=-1,
                     help="Save every this interval.")
-parser.add_argument('-sample_every', type=int, default=2000,
+parser.add_argument('-sample_every', type=int, default=5000,
                     help="Save every this interval.")
 
 parser.add_argument('-valid_src', default='',
@@ -146,12 +150,16 @@ parser.add_argument('-valid_tgt', default='',
                     help="Path to the validation target data")                   
 opt = parser.parse_args()
 
+if opt.computational_batch_size <= 0 :
+    opt.computational_batch_size = opt.batch_size
+
 print(opt)
 
 if opt.reinforce_metrics == 'gleu':
-	score = sentence_gleu
+    score = sentence_gleu
 elif opt.reinforce_metrics == 'sbleu':
-	score = sentence_bleu
+    score = sentence_bleu
+
 
 
 if torch.cuda.is_available() and not opt.gpus:
@@ -159,6 +167,7 @@ if torch.cuda.is_available() and not opt.gpus:
 
 if opt.gpus:
     cuda.set_device(opt.gpus[0])
+
 
 torch.manual_seed(opt.seed)
 
@@ -172,159 +181,161 @@ def NMTCriterion(vocabSize):
 
 
 def eval_translate(model, dicts, srcFile, tgtFile, beam_size=1, bpe=True):
-		
-		print(" * Translating file %s " % srcFile )
-		if len(srcFile) == 0:
-			return 0
-		# initialize the translator for beam search
-		translator = onmt.InPlaceTranslator(model, dicts, beam_size=beam_size, 
-																				batch_size=opt.eval_batch_size, 
-																				cuda=len(opt.gpus) >= 1)
-		
-		srcBatch = []
-		
-		count = 0
-		
-		# we print translations into temp files
-		outF = tempfile.NamedTemporaryFile()
-		outRef = tempfile.NamedTemporaryFile()
-		
-		nLines = len(open(srcFile).readlines())
-		
-		inFile = open(srcFile)
-		
+        
+        
+        if len(srcFile) == 0:
+            return 0
+        print(" * Translating file %s " % srcFile )
+        # initialize the translator for beam search
+        translator = onmt.InPlaceTranslator(model, dicts, beam_size=beam_size, 
+                                                                                batch_size=opt.eval_batch_size, 
+                                                                                cuda=len(opt.gpus) >= 1)
+        
+        srcBatch = []
+        
+        count = 0
+        
+        # we print translations into temp files
+        outF = tempfile.NamedTemporaryFile()
+        outRef = tempfile.NamedTemporaryFile()
+        
+        nLines = len(open(srcFile).readlines())
+        
+        inFile = open(srcFile)
+        
 
-		for line in addone(inFile):
-			if line is not None:
-				srcTokens = line.split()
-				srcBatch += [srcTokens]
-				if len(srcBatch) < opt.eval_batch_size:
-					continue
-			
-			if len(srcBatch) == 0:
-				break		
-				
-			predBatch, predScore, goldScore = translator.translate(srcBatch)
-			
-			for b in range(len(predBatch)):
-				count += 1
-				decodedSent = " ".join(predBatch[b][0])
-				
-				if bpe:
-					decodedSent = decodedSent.replace('@@ ', '')
-				
-				outF.write(decodedSent + "\n")
-				outF.flush()
-				
-				sys.stdout.write("\r* %i/%i Sentences" % (count , nLines))
-				sys.stdout.flush()
-			
-			srcBatch = []
-			
-		print("\nDone")
-		refFile = open(tgtFile)
-		
-		for line in addone(refFile):
-			if line is not None:
-				line = line.strip()
-				if bpe:
-					line = line.replace('@@ ', '')
-				outRef.write(line + "\n")
-				outRef.flush()
-		
-		# compute bleu using external script
-		bleu = moses_multi_bleu(outF.name, outRef.name)
-		refFile.close()
-		inFile.close()
-		outF.close()
-		outRef.close()
-		# after decoding, switch model back to training mode
-		model.train()
-		
-		return bleu
+        for line in addone(inFile):
+            if line is not None:
+                srcTokens = line.split()
+                srcBatch += [srcTokens]
+                if len(srcBatch) < opt.eval_batch_size:
+                    continue
+            
+            if len(srcBatch) == 0:
+                break        
+                
+            predBatch, predScore, goldScore = translator.translate(srcBatch)
+            
+            for b in range(len(predBatch)):
+                count += 1
+                decodedSent = " ".join(predBatch[b][0])
+                
+                if bpe:
+                    decodedSent = decodedSent.replace('@@ ', '')
+                
+                outF.write(decodedSent + "\n")
+                outF.flush()
+                
+                sys.stdout.write("\r* %i/%i Sentences" % (count , nLines))
+                sys.stdout.flush()
+            
+            srcBatch = []
+            
+        print("\nDone")
+        refFile = open(tgtFile)
+        
+        for line in addone(refFile):
+            if line is not None:
+                line = line.strip()
+                if bpe:
+                    line = line.replace('@@ ', '')
+                outRef.write(line + "\n")
+                outRef.flush()
+        
+        # compute bleu using external script
+        bleu = moses_multi_bleu(outF.name, outRef.name)
+        refFile.close()
+        inFile.close()
+        outF.close()
+        outRef.close()
+        # after decoding, switch model back to training mode
+        model.train()
+        model.decoder.attn.applyMask(None)
+        
+        return bleu
 
 def compute_score(samples, lengths, ref, dicts, batch_size, average=True):
-		
-		# probably faster than gpu ?
-		#~ samples = samples.cpu()
-		
-		sdata = samples.data.cpu()
-		rdata = ref.data.cpu()
-		
-		tgtDict = dicts['tgt']
-		
-		s = torch.Tensor(batch_size)
-		
-		for i in xrange(batch_size):
-			
-			sampledIDs = sdata[:,i]
-			refIDs = rdata[:,i]
-			
-			sampledWords = tgtDict.convertTensorToLabels(sampledIDs, onmt.Constants.EOS)
-			refWords = tgtDict.convertTensorToLabels(refIDs, onmt.Constants.EOS)
-			
-			s[i] = score(refWords, sampledWords)
-			assert(len(sampledWords) == lengths[i])
-			
-		s = s.cuda()
-			
-		return s
+        
+    # probably faster than gpu ?
+    #~ samples = samples.cpu()
+    
+    sdata = samples.data.cpu()
+    rdata = ref.data.cpu()
+    
+    tgtDict = dicts['tgt']
+    
+    s = torch.Tensor(batch_size)
+    
+    for i in xrange(batch_size):
+        
+        sampledIDs = sdata[:,i]
+        refIDs = rdata[:,i]
+        
+        sampledWords = tgtDict.convertTensorToLabels(sampledIDs, onmt.Constants.EOS)
+        refWords = tgtDict.convertTensorToLabels(refIDs, onmt.Constants.EOS)
+        
+        s[i] = score(refWords, sampledWords)
+        assert(len(sampledWords) == lengths[i])
+        
+    s = s.cuda()
+        
+    return s
  
 def sample(model, batch, dicts, eval=False):
-		
-		# output of sampling function is a list 
-		# containing sampled indices for each time step
-		# ( padded to the right )
-		#~ model.eval()
-		if eval:
-			model.eval()
-		print("\nSampling ... ")
-		
-		src = batch[0]
-		
-		# I wrap a new variable so that the sampling process
-		# doesn't record any history (more memory efficient ?)
-		variable = Variable(src[0].data, volatile=True)
-		length = Variable(src[1].data, volatile=True)
-		
-		sampled_sequence, lengths = model.sample((variable, length), argmax=False)
-		
-		tgtDict = dicts['tgt']
-		srcDict = dicts['src']
-		
-		batch_size = sampled_sequence.size(1)
-		
-		indices = random.sample(range(batch_size), min(10, batch_size))
-		
-		ref = batch[1][1:]
-		
-		for idx in indices:
-				
-			tgtIds = sampled_sequence.data[:,idx]
-			
-			tgtWords = tgtDict.convertTensorToLabels(tgtIds, onmt.Constants.EOS)
-			
-			sampledSent = " ".join(tgtWords)
-			
-			print "SAMPLE :", sampledSent
-			
-			refIds = ref.data[:,idx]
-			
-			refWords = tgtDict.convertTensorToLabels(refIds, onmt.Constants.EOS)
-			
-			refSent = " ".join(refWords)
-			
-			print "   REF :", refSent
-			
-			s = score(refWords, tgtWords)
-			
-			print "Score =", s
-		
-		if eval:
-			model.train()
-			
-		print("\n")
-	
+        
+    # output of sampling function is a list 
+    # containing sampled indices for each time step
+    # ( padded to the right )
+    #~ model.eval()
+    if eval:
+        model.eval()
+    print("\nSampling ... ")
+    
+    src = batch[0]
+    
+    # I wrap a new variable so that the sampling process
+    # doesn't record any history (more memory efficient ?)
+    variable = Variable(src[0].data, volatile=True)
+    length = Variable(src[1].data, volatile=True)
+    
+    sampled_sequence, lengths = model.sample((variable, length), argmax=False)
+    
+    tgtDict = dicts['tgt']
+    srcDict = dicts['src']
+    
+    batch_size = sampled_sequence.size(1)
+    
+    indices = random.sample(range(batch_size), min(10, batch_size))
+    
+    ref = batch[1][1:]
+    
+    for idx in indices:
+            
+        tgtIds = sampled_sequence.data[:,idx]
+        
+        tgtWords = tgtDict.convertTensorToLabels(tgtIds, onmt.Constants.EOS)
+        
+        sampledSent = " ".join(tgtWords)
+        
+        print "SAMPLE :", sampledSent
+        
+        refIds = ref.data[:,idx]
+        
+        refWords = tgtDict.convertTensorToLabels(refIds, onmt.Constants.EOS)
+        
+        refSent = " ".join(refWords)
+        
+        print "   REF :", refSent
+        
+        s = score(refWords, tgtWords)
+        
+        print "Score =", s
+    
+    if eval:
+        model.train()
+        
+    print("\n")
+    
 
 def eval(model, data, criterion):
     total_loss = 0
@@ -341,7 +352,7 @@ def eval(model, data, criterion):
         outputs_flat = outputs.view(-1, outputs.size(-1))
         targets_flat = targets.view(-1)
         loss = criterion(outputs_flat, targets_flat)
-        total_loss += loss
+        total_loss += loss.data[0]
         total_words += targets.data.ne(onmt.Constants.PAD).sum()
 
     model.train()
@@ -350,7 +361,7 @@ def eval(model, data, criterion):
 
 
 
-def trainModel(model, trainData, validData, dataset, optim, criterion):
+def trainModel(model, trainData, validData, dataset, optim, criterion, gBuffer):
     
     model.train()
     
@@ -366,11 +377,12 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
         # Shuffle mini batch order.
         
         if not batchOrder:
-					batchOrder = torch.randperm(len(trainData))
+            batchOrder = torch.randperm(len(trainData))
 
-        total_loss_xe, total_words_xe = 0, 0
-        report_loss_xe, report_tgt_words_xe = 0, 0
-        report_src_words, report_tgt_words = 0, 0
+        #~ total_loss_xe, total_words_xe = 0, 0
+        #~ report_loss_xe, report_tgt_words_xe = 0, 0
+        #~ report_src_words, report_tgt_words = 0, 0
+        stats = onmt.Stats()
         start = time.time()
         nSamples = len(trainData)
         for i in range(nSamples):
@@ -382,130 +394,169 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
             # Exclude <s> from targets.
             targets = batch[1][1:]
             num_words = targets.data.ne(onmt.Constants.PAD).sum()
-
+            
             model.zero_grad()
+            gBuffer.zero_buffer()
             
-            train_mode = 'xe'
-            if random.random() < opt.reinforce_rate:
-							train_mode = 'rf'
-						
-						# For Cross Entropy mode training
-            if train_mode == 'xe':
-							# Loss is computed by nll criterion
-							outputs, _ = model(batch, mode=train_mode, timestep_group=opt.max_generator_batches)
-							
-							outputs_flat = outputs.view(-1, outputs.size(-1))
-							targets_flat = targets.view(-1)
-							
-							loss = criterion(outputs_flat, targets_flat)
-							loss_value = loss.data[0]
-							loss.div(batch_size).backward()
+            def _train_f(minibatch, total_batch_size, stats):
             
-							loss_xe = loss_value
-							
-							report_loss_xe += loss_xe
-							report_tgt_words_xe += num_words
-							
-							total_loss_xe += loss_xe
-							total_words_xe += num_words
-							optim.step()
-							
-						# For reinforcement learning mode
-            elif train_mode == 'rf':
-							ref = batch[1][1:]
-							# Monte-Carlo actions and greedy actions to be sampled
-							rl_actions, rl_lengths, greedy_actions, greedy_lengths = model(batch, mode=train_mode)
-							
-							# reward for samples from stochastic function
-							sampled_reward = compute_score(rl_actions, rl_lengths, ref, dicts, batch_size) 
-							
-							# samples from greedy search
-							greedy_reward = compute_score(greedy_actions, greedy_lengths, ref, dicts, batch_size) 
-							
-							# the REINFORCE reward to be the difference between MC and greedy
-							# should we manually divide rewards by batch size ? since we may have different batch size
-							rf_rewards = (sampled_reward - greedy_reward) / batch_size 
-							
-							
-							# centralize the rewards to make learning faster ?
-							rf_rewards = (rf_rewards - rf_rewards.mean()) / (rf_rewards.std() + np.finfo(np.float32).eps)
-							
-							# Reward cumulative backward:
-							length = rl_actions.size(0)
-							for t in xrange(length):
-								
-								reward_t = rf_rewards.clone()
-								
-								# a little hack here: since we only have reward at the last step
-								# so the cumulative is the reward itself at every time step
-								for b in xrange(batch_size):
-									# important: reward for PAD tokens = 0
-									if t+1 > rl_lengths[b]:
-										reward_t[b] = 0
-										
-								model.saved_actions[t].reinforce(reward_t.unsqueeze(1))
-							
-							# We backward from stochastic actions, ignoring the gradOutputs
-							# Note: we don't have gradients here for the outputs of the network (stochastic actions)
-							torch.autograd.backward(model.saved_actions, [None for _ in model.saved_actions])
-							# Update the parameters and free the action list.	
-							optim.step()
-							model.saved_actions = []
-							
-						
-            report_src_words += batch[0][1].data.sum()
-            report_tgt_words += num_words
+                train_mode = 'xe'
+                if random.random() < opt.reinforce_rate:
+                    train_mode = 'rf'
+                            
+                    # For Cross Entropy mode training        
+                if train_mode == 'xe':
+                    
+                    outputs , _ = model(minibatch, mode=train_mode)               
+                    split_targets = minibatch[1][1:]
+                    
+                    flat_outputs = outputs.view(-1, outputs.size(-1))
+                    flat_targets = split_targets.view(-1)
+                    
+                    # Loss is computed by nll criterion
+                    loss = criterion(flat_outputs, flat_targets)
+                    loss_value = loss.data[0]
+                    
+                    norm_value = total_batch_size
+                
+                    if opt.optim == 'yellowfin':
+                        norm_value = num_words
+                    
+                    loss.div(norm_value).backward()
 
-            # Sample at the end of epoch (experimental):
+                    loss_xe = loss_value
+                    
+                    stats.report_loss_xe += loss_xe
+                    
+                    
+                    stats.total_loss_xe += loss_xe
+                    stats.total_words_xe += num_words
+                                
+                    # For reinforcement learning mode
+                elif train_mode == 'rf':
+                    ref = minibatch[1][1:]
+                    batch_size = ref.size(1)
+                    # Monte-Carlo actions and greedy actions to be sampled
+                    rl_actions, rl_lengths, greedy_actions, greedy_lengths = model(minibatch, mode=train_mode)
+                    
+                    # reward for samples from stochastic function
+                    sampled_reward = compute_score(rl_actions, rl_lengths, ref, dicts, batch_size) 
+                    
+                    # samples from greedy search
+                    greedy_reward = compute_score(greedy_actions, greedy_lengths, ref, dicts, batch_size) 
+                    
+                    # the REINFORCE reward to be the difference between MC and greedy
+                    # should we manually divide rewards by batch size ? since we may have different batch size
+                    rf_rewards = (sampled_reward - greedy_reward) / total_batch_size 
+                    
+                    
+                    # centralize the rewards to make learning faster ?
+                    rf_rewards = (rf_rewards - rf_rewards.mean()) / (rf_rewards.std() + np.finfo(np.float32).eps)
+                    
+                    # Reward cumulative backward:
+                    length = rl_actions.size(0)
+                    for t in xrange(length):
+                        
+                        reward_t = rf_rewards.clone()
+                        
+                        # a little hack here: since we only have reward at the last step
+                        # so the cumulative is the reward itself at every time step
+                        for b in xrange(batch_size):
+                            # important: reward for PAD tokens = 0
+                            if t+1 > rl_lengths[b]:
+                                reward_t[b] = 0
+                                
+                        model.saved_actions[t].reinforce(reward_t.unsqueeze(1))
+                    
+                    # We backward from stochastic actions, ignoring the gradOutputs
+                    torch.autograd.backward(model.saved_actions, [None for _ in model.saved_actions])
+                    
+                    # Update the parameters and free the action list.    
+                    model.saved_actions = []
+            
+            stats.report_tgt_words_xe += num_words
+            
+            #~ _train_f(batch)
+            
+            # We split the minibatch into smaller ones when we cannot fit in the GPU
+            #~ splitted_batches = split_batch(batch, opt.computational_batch_size)
+                                           
+            
+            _train_f(batch, batch_size, stats)
+            #~ for mini_batch in splitted_batches:
+                #~ # Do forward on the mini batch 
+                #~ # And get the gradients
+                #~ _train_f(mini_batch, batch_size, stats)
+                #~ 
+                #~ # store the gradients in the buffer
+                #~ gBuffer.add_buffer()
+                #~ 
+                #~ # zero grad the model for the next mini batch
+                #~ model.zero_grad()
+                #~ del mini_batch
+            
+            # transfer the gradients from buffer to model
+            #~ gBuffer.accumulate_buffer()
+            
+            # finally, do the SGD update
+            optim.step()            
+            
+            # Notes: thanks to the dynamic mechanism of PyTorch, we shouldn't need to do this
+            # We should only need to 
+                        
+            stats.report_src_words += batch[0][1].data.sum()
+            stats.report_tgt_words += num_words
+
+            # Sampling (experimental):
             if i % opt.sample_every == -1 % opt.sample_every:
-							sample(model, batch, dicts)
+                sample(model, batch, dicts)
 
             
             if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
                 print(("Epoch %2d, %5d/%5d; ; ppl: %6.2f; lr: %1.6f; " +
                        "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
                       (epoch, i+1, len(trainData),
-                       math.exp(report_loss_xe / (report_tgt_words_xe + 1e-6)),
-                       optim.get_learning_rate(),
-                       report_src_words/(time.time()-start),
-                       report_tgt_words/(time.time()-start),
+                       math.exp(stats.report_loss_xe / (stats.report_tgt_words_xe + 1e-6)),
+                       optim.getLearningRate(),
+                       stats.report_src_words/(time.time()-start),
+                       stats.report_tgt_words/(time.time()-start),
                        time.time()-start_time))
 
-                report_loss_xe, report_tgt_words_xe = 0, 0
-                report_src_words = 0
-                report_tgt_words = 0
+                stats.report_loss_xe, stats.report_tgt_words_xe = 0, 0
+                stats.report_src_words = 0
+                stats.report_tgt_words = 0
                 start = time.time()
             
             if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
-							valid_loss = eval(model, validData, criterion).data[0]
-							valid_ppl = math.exp(min(valid_loss, 100))
-							valid_bleu = eval_translate(model, dicts, opt.valid_src, opt.valid_tgt)
-							print('Validation perplexity: %g' % valid_ppl)
-							print('Validation BLEU: %.2f' % valid_bleu)
-							
-							model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
-                            else model.state_dict())
-							model_state_dict = {k: v for k, v in model_state_dict.items()}
-							
-							#  drop a checkpoint
-							ep = float(epoch) - 1 + (i + 1) / nSamples
-							checkpoint = {
-									'model': model_state_dict,
-									#~ 'generator': generator_state_dict,
-									'dicts': dataset['dicts'],
-									'opt': opt,
-									'epoch': ep,
-									'iteration' : i,
-									'batchOrder' : batchOrder,
-									'optim': optim
-							}
-							
-							file_name = '%s_ppl_%.2f_bleu_%.2f_e%.2f.pt'
-							print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, ep))
-							torch.save(checkpoint,
-												 file_name
-												 % (opt.save_model, valid_ppl, valid_bleu, ep))
-        return total_loss_xe / (total_words_xe + 1e-6)
+                valid_loss = eval(model, validData, criterion)
+                valid_ppl = math.exp(min(valid_loss, 100))
+                valid_bleu = eval_translate(model, dicts, opt.valid_src, opt.valid_tgt)
+                print('Validation perplexity: %g' % valid_ppl)
+                print('Validation BLEU: %.2f' % valid_bleu)
+                
+                model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
+                else model.state_dict())
+                model_state_dict = {k: v for k, v in model_state_dict.items()}
+                
+                #  drop a checkpoint
+                ep = float(epoch) - 1 + (i + 1) / nSamples
+                checkpoint = {
+                        'model': model_state_dict,
+                        #~ 'generator': generator_state_dict,
+                        'dicts': dataset['dicts'],
+                        'opt': opt,
+                        'epoch': ep,
+                        'iteration' : i,
+                        'batchOrder' : batchOrder,
+                        'optim': optim
+                }
+                
+                file_name = '%s_ppl_%.2f_bleu_%.2f_e%.2f.pt'
+                print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, ep))
+                torch.save(checkpoint,
+                                     file_name
+                                     % (opt.save_model, valid_ppl, valid_bleu, ep))
+        return stats.total_loss_xe / (stats.total_words_xe + 1e-6)
 
     for epoch in range(opt.start_epoch, opt.start_epoch + opt.epochs):
         print('')
@@ -516,7 +567,7 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
         print('Train perplexity: %g' % train_ppl)
 
         #  (2) evaluate on the validation set
-        valid_loss = eval(model, validData, criterion).data[0]
+        valid_loss = eval(model, validData, criterion)
         valid_ppl = math.exp(min(valid_loss, 100))
         valid_bleu = eval_translate(model, dicts, opt.valid_src, opt.valid_tgt)
         print('Validation perplexity: %g' % valid_ppl)
@@ -540,8 +591,8 @@ def trainModel(model, trainData, validData, dataset, optim, criterion):
             'optim': optim
         }
         
-				
-        file_name = '%s_ppl_%.2f_bleu_%.2f_e%.2f.pt'
+                
+        file_name = '%s_ppl_%.2f_bleu_%.2f_e%d.pt'
         print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, epoch))
         torch.save(checkpoint,
                    file_name % (opt.save_model, valid_ppl, valid_bleu, epoch))
@@ -561,9 +612,9 @@ def main():
 
     trainData = onmt.Dataset(dataset['train']['src'],
                              dataset['train']['tgt'], opt.batch_size, opt.gpus,
-                             data_type=dataset.get("type", "text"))
+                             data_type=dataset.get("type", "text"), balance=(opt.balance_batch==1))
     validData = onmt.Dataset(dataset['valid']['src'],
-                             dataset['valid']['tgt'], opt.batch_size, opt.gpus,
+                             dataset['valid']['tgt'], opt.eval_batch_size, opt.gpus,
                              volatile=True,
                              data_type=dataset.get("type", "text"))
 
@@ -610,22 +661,24 @@ def main():
         opt.start_epoch = checkpoint['epoch'] + 1
 
     if opt.train_from_state_dict:
-				
+                
         print('Loading model from checkpoint at %s'
               % opt.train_from_state_dict)
-        model.criterion = criterion
-        model.load_state_dict(checkpoint['model'])
-        opt.start_epoch = checkpoint['epoch'] + 1
-		
-		
+        model_state_dict = {k: v for k, v in checkpoint['model'].items() if 'criterion' not in k}
+        model.load_state_dict(model_state_dict)
+        opt.start_epoch = int(math.floor(checkpoint['epoch'] + 1))
+        del checkpoint['model'] 
+        
+        
+        
+        
+        
     if len(opt.gpus) >= 1:
         model.cuda()
     else:
         model.cpu()
 
-    
 
-    
 
     if not opt.train_from_state_dict and not opt.train_from:
         for p in model.parameters():
@@ -633,9 +686,9 @@ def main():
 
         encoder.load_pretrained_vectors(opt)
         decoder.load_pretrained_vectors(opt)
-				
+                
     if opt.tie_weights:
-			model.tie_weights()    
+            model.tie_weights()    
     
     if len(opt.gpus) > 1:
         model = nn.DataParallel(model, device_ids=opt.gpus, dim=1)
@@ -650,42 +703,45 @@ def main():
         #~ optim.start_decay = False
     
     if opt.reset_optim or not opt.train_from_state_dict:    
-		
-			optim = onmt.Optim(
-							opt.optim, opt.learning_rate, opt.max_grad_norm,
-							lr_decay=opt.learning_rate_decay,
-							start_decay_at=opt.start_decay_at
-					)
+        
+        optim = onmt.Optim(
+                opt.optim, opt.learning_rate, opt.max_grad_norm,
+                lr_decay=opt.learning_rate_decay,
+                start_decay_at=opt.start_decay_at
+        )
     
     else:
-			 print('Loading optimizer from checkpoint:')
-			 optim = checkpoint['optim']  
-			 # Force change learning rate
-			 optim.lr = opt.learning_rate
-			 optim.start_decay_at = opt.start_decay_at
-			 optim.start_decay = False
-		
+         print('Loading optimizer from checkpoint:')
+         optim = checkpoint['optim']  
+         # Force change learning rate
+         optim.lr = opt.learning_rate
+         optim.start_decay_at = opt.start_decay_at
+         optim.start_decay = False
+         del checkpoint['optim']
+        
     optim.set_parameters(model.parameters())
-		optim.set_learning_rate(opt.learning_rate)
-		
-		# This doesn't work for me But still there in the main repo 
-		# So let's keep it here
+    optim.setLearningRate(opt.learning_rate)
+        
+        # This doesn't work for me But still there in the main repo 
+        # So let's keep it here
     #~ if opt.train_from or opt.train_from_state_dict:
         #~ optim.optimizer.load_state_dict(
             #~ checkpoint['optim'].optimizer.state_dict())
+            
+    gBuffer = onmt.GradientBuffer(model)
 
     nParams = sum([p.nelement() for p in model.parameters()])
     print('* number of parameters: %d' % nParams)
     
     bleu_score = eval_translate(model, dicts, opt.valid_src, opt.valid_tgt)
     
-    valid_loss = eval(model, validData, criterion).data[0]
+    valid_loss = eval(model, validData, criterion)
     valid_ppl = math.exp(min(valid_loss, 100))
     print('* Initial BLEU score : %.2f' % bleu_score)
     print('* Initial Perplexity : %.2f' % valid_ppl)
     print(model)
     print('* Start training ... ')
-    trainModel(model, trainData, validData, dataset, optim, criterion)
+    trainModel(model, trainData, validData, dataset, optim, criterion, gBuffer)
 
 
 if __name__ == "__main__":
