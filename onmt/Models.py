@@ -10,7 +10,7 @@ import random
 
 class Encoder(nn.Module):
 
-    def __init__(self, opt, dicts):
+    def __init__(self, opt, dicts, embeddings):
         self.layers = opt.layers
         self.num_directions = 2 if opt.brnn else 1
         assert opt.rnn_size % self.num_directions == 0
@@ -19,9 +19,8 @@ class Encoder(nn.Module):
         dropout_value = opt.dropout 
 
         super(Encoder, self).__init__()
-        self.word_lut = nn.Embedding(dicts.size(),
-                                     opt.word_vec_size,
-                                     padding_idx=onmt.Constants.PAD)
+        
+        self.word_lut = embeddings
         self.rnn = nn.LSTM(input_size, self.hidden_size,
                            num_layers=opt.layers,
                            dropout=dropout_value,
@@ -75,7 +74,7 @@ class StackedLSTM(nn.Module):
 
 class Decoder(nn.Module):
 
-    def __init__(self, opt, dicts):
+    def __init__(self, opt, dicts, embeddings):
         self.layers = opt.layers
         self.input_feed = opt.input_feed
         input_size = opt.word_vec_size
@@ -83,9 +82,10 @@ class Decoder(nn.Module):
             input_size += opt.rnn_size
 
         super(Decoder, self).__init__()
-        self.word_lut = nn.Embedding(dicts.size(),
-                                     opt.word_vec_size,
-                                     padding_idx=onmt.Constants.PAD)
+        #~ self.word_lut = nn.Embedding(dicts.size(),
+                                     #~ opt.word_vec_size,
+                                     #~ padding_idx=onmt.Constants.PAD)
+        self.word_lut = embeddings
         self.rnn = StackedLSTM(opt.layers, input_size,
                                opt.rnn_size, opt.dropout)
         self.attn = onmt.modules.GlobalAttention(opt.rnn_size)
@@ -95,7 +95,7 @@ class Decoder(nn.Module):
         self.input_size = input_size
         
     def free_mask(self):
-                                self.attn.free_mask()
+        self.attn.free_mask()
 
     def load_pretrained_vectors(self, opt):
         if opt.pre_word_vecs_dec is not None:
@@ -122,33 +122,26 @@ class Decoder(nn.Module):
 
         outputs = torch.stack(outputs)
         return outputs, hidden, attn
-
-
-class NMTModel(nn.Module):
-
+        
+class RecurrentEncoderDecoder(nn.Module):
+    
     def __init__(self, encoder, decoder, generator):
-        super(NMTModel, self).__init__()
+        super(RecurrentEncoderDecoder, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
         self.generator = generator
         
-        # For reinforcement learning 
-        self.saved_actions = []
-        self.rewards = [] # remember that this is cumulative (sum of rewards from start to end)
-    
-    def tie_weights(self):
-                                self.decoder.word_lut.weight = self.generator.net[0].weight
     # For sampling functions, we need to create an initial input
     # Which is vector of batch_size full of BOS    
     def make_init_input(self, src, volatile=False):
-                                if isinstance(src, tuple):
-                                        src = src[0]
-                                batch_size = src.size(1)
-                                i_size = (1, batch_size)
-                                
-                                input_vector = src.data.new(*i_size).fill_(onmt.Constants.BOS)
-                                return Variable(input_vector, requires_grad=False, volatile=volatile)
-
+        if isinstance(src, tuple):
+                src = src[0]
+        batch_size = src.size(1)
+        i_size = (1, batch_size)
+        
+        input_vector = src.data.new(*i_size).fill_(onmt.Constants.BOS)
+        return Variable(input_vector, requires_grad=False, volatile=volatile)
+        
     def make_init_decoder_output(self, context):
         batch_size = context.size(1)
         h_size = (batch_size, self.decoder.hidden_size)
@@ -163,11 +156,27 @@ class NMTModel(nn.Module):
                     .view(h.size(0) // 2, h.size(1), h.size(2) * 2)
         else:
             return h
-            
+    
+
+class NMTModel(RecurrentEncoderDecoder):
+
+    def __init__(self, encoder, decoder, generator):
+        super(NMTModel, self).__init__(encoder, decoder, generator)
+        
+        # For reinforcement learning 
+        self.saved_actions = []
+        self.rewards = [] # remember that this is cumulative (sum of rewards from start to end)
+    
+    def tie_weights(self):
+        self.decoder.word_lut.weight = self.generator.net[0].weight
+        
+    def tie_join_embeddings(self):
+        self.encoder.word_lut.weight = self.decoder.word_lut.weight
+    
+    # Samping function (mostly for debugging)         
     def sample(self, input, max_length=50, argmax=True):
                         
                                 
-        #~ src = input[0]
         src = input
         # we don't care about tgt here
         
@@ -184,15 +193,15 @@ class NMTModel(nn.Module):
         # For input feeding initial output
         init_output = self.make_init_decoder_output(context)
 
-        sampled, length, logprob = self.sample_from_context(context, init_output, enc_hidden, 
+        sampled,  logprob = self.sample_from_context(context, init_output, enc_hidden, 
                                                   init_input, argmax=argmax, max_length=max_length)
         
-        return sampled, length
+        return sampled
                 
                 
-                # A function to sample from a pre-computed context 
-                # We need the context, the initial hidden layer, the initial state (for input feed) and an initial input
-                # Options are: using argmax or stochastic, and to save the stochastic actions for reinforcement learning
+    # A function to sample from a pre-computed context 
+    # We need the context, the initial hidden layer, the initial state (for input feed) and an initial input
+    # Options are: using argmax or stochastic, and to save the stochastic actions for reinforcement learning
     def sample_from_context(self, context, init_state, init_hiddens, init_input, 
                                 max_length=50, save=False, argmax=True):
                         
@@ -206,109 +215,93 @@ class NMTModel(nn.Module):
         sampled = []
         
         if not save:
-                context = Variable(context.data, volatile=True)
-                #~ hidden = Variable(hidden.data, volatile=True)
-                state = Variable(state.data, volatile=True)
-                input_t = Variable(input_t.data, volatile=True)
+            context = Variable(context.data, volatile=True)
+            #~ hidden = Variable(hidden.data, volatile=True)
+            state = Variable(state.data, volatile=True)
+            input_t = Variable(input_t.data, volatile=True)
         
-        tensor_check = None
-        
-        lengths = torch.Tensor(1, batch_size).fill_(max_length).type_as(input_t.data)
-        
-        check_tensor = torch.Tensor(batch_size).zero_().type_as(input_t.data)
+        tensor_check = init_input[0].data.byte().new(batch_size, 1).zero_()
+                        
+        last_mask = init_input[0].data.byte().new(batch_size, 1).zero_()
         
         accumulated_logprob = None
         
         
         for t in xrange(max_length):
-                # make a forward pass through the decoder
-                state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
+            # make a forward pass through the decoder
+            state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
+            
+            state = state.squeeze(0)
+            output = self.generator(state) 
+            if argmax:
+                sample = torch.topk(output, 1, dim=1)[1].data
                 
-                state = state.squeeze(0)
-                output = self.generator(state) 
-                if argmax:
-                        #~ topv, sample = torch.max(output, 1, keepdim=True)
-                        topv, sample = torch.topk(output, 1, dim=1)
-                        #~ topv, sample = torch.max(output, 1, keepdim=True)
-                        
-                        input_t = sample.t()
-                        #~ input_t = Variable(sample.t())
-                        #~ sample = Variable(sample)
-                else: # Stochastic sampling
-                        #~ sample = output.exp().multinomial()
-                        dist = output.exp()
-                        
-                        sample = torch.multinomial(dist, 1) # batch_size x 1
-                        
-                        
-                        input_t = sample.t() # 1 x batch_size
                 
-                # log prob of the samples
-                logprob = output.index_select(1, input_t.squeeze(0))        # batch_size * 1 
-                        
-                if save:
-                        assert argmax==False
-                        self.saved_actions.append(sample)
+            else: # Stochastic sampling
+                dist = output.exp()
                 
-                #~ if tensor_check is not None:
-                        #~ input_t.masked_fill(tensor_check, onmt.Constants.PAD)
-                        
+                #~ sample = torch.multinomial(dist, 1) # batch_size x 1
+                sample_ = dist.multinomial(1)
                 
-                check = input_t.data.eq(onmt.Constants.EOS)
+                sample = sample_.data
+            
+            # log prob of the samples
+            #~ logprob = output.index_select(1, input_t.squeeze(0))        # batch_size * 1 
+                    
+            if save:
+                assert argmax==False
+                self.saved_actions.append(sample_)
                 
-                #~ check = check.long().squeeze(0)
-                
-                #~ check_tensor += check
-                
-                #~ check_tensor.clamp_(0, 1)
-                
-                # condition to stop the sampling procedure
-                #~ for b in xrange(batch_size):
-                        #~ if sample.data[b][0] == onmt.Constants.EOS:
-                                #~ check_tensor[b] = 1
-                
-                if tensor_check is None:
-                        tensor_check  = check
-                else:
-                        tensor_check += check
-                        
-                break_signal = False
-                
-                if torch.sum(tensor_check) == batch_size:
-                        break_signal = True
-                
-                input_t.masked_fill(tensor_check, onmt.Constants.PAD)
-                
-                #~ logprob.masked_fill(tensor_check.squeeze(0), 0)
-                
-                #~ if accumulated_logprob is None:
-                        #~ accumulated_logprob = logprob
-                #~ else:
-                        #~ accumulated_logprob += logprob
-                
-                sampled.append(input_t)
-                # if all sentences are finished (reach EOS)
-                if break_signal:
-                        break
+            check = (sample == onmt.Constants.EOS)
+
+            tensor_check |= check 
+            
+            sample.masked_fill_(last_mask, onmt.Constants.PAD)
+            
+            last_mask |= check
+          
+            break_signal = False
+            
+            if tensor_check.sum() == batch_size:
+                break_signal = True
+            
+            
+            input_t = Variable(sample.t())
+            
+            
+            #~ logprob.masked_fill(tensor_check.squeeze(0), 0)
+            
+            #~ if accumulated_logprob is None:
+                    #~ accumulated_logprob = logprob
+            #~ else:
+                    #~ accumulated_logprob += logprob
+            
+            sampled.append(input_t)
+            # if all sentences are finished (reach EOS)
+            if break_signal:
+                break
         
         # gather the lengths of the samples                                                
-        lengths = [len(sampled) for i in xrange(batch_size)]
+        #~ lengths = [len(sampled) for i in xrange(batch_size)]
  
-        for i in xrange(batch_size):
+        #~ for i in xrange(batch_size):
                         
-                for t in xrange(len(sampled)):
-                        if sampled[t].data[0][i] == onmt.Constants.EOS:
-                                lengths[i] = t + 1
-                                break
+            #~ for t in xrange(len(sampled)):
+                    #~ if sampled[t].data[0][i] == onmt.Constants.EOS:
+                            #~ lengths[i] = t + 1
+                            #~ break
         
         # we concatenate them into one single Tensor                                 
         sampled = torch.cat(sampled, 0)
         
-        return sampled, lengths, accumulated_logprob
+        #~ print(lengths)
+        
+        #~ return sampled, lengths, accumulated_logprob
+        return sampled, accumulated_logprob
                 
                 
-                # Forward pass :
-                # Two (or mode) modes: Cross Entropy or Reinforce
+    # Forward pass :
+    # Two (or more) modes: Cross Entropy or Reinforce
     def forward(self, input, mode='xe', max_length=50, gen_greedy=True, timestep_group=8):
         src = input[0]
         tgt = input[1][:-1]  # exclude last target from inputs
@@ -334,93 +327,129 @@ class NMTModel(nn.Module):
         # Using teacher forcing and log-likelihood loss as normally
         if mode == 'xe':
                 
-                hiddens, dec_hidden, _attn = self.decoder(tgt, enc_hidden,
-                      context, init_output)
-                
-                # hiddens has size T * B * H
-                hiddens_split = torch.split(hiddens, timestep_group)
-                outputs = []
-                
-                # we group the computation for faster and more efficient GPU memory
-                for i, hidden_group in enumerate(hiddens_split):
+            hiddens, dec_hidden, _attn = self.decoder(tgt, enc_hidden,
+                  context, init_output)
+            
+            # hiddens has size T * B * H
+            hiddens_split = torch.split(hiddens, timestep_group)
+            outputs = []
+            
+            # we group the computation for faster and more efficient GPU memory
+            for i, hidden_group in enumerate(hiddens_split):
+                    
+                n_steps = hidden_group.size(0)
+                hidden_group = hidden_group.view(-1, hidden_group.size(2))
+                output_group = self.generator(hidden_group)
+                output_group = output_group.view(n_steps, -1, output_group.size(1))
+                outputs.append(output_group)
+            
+            # concatenate into one single tensor
+            outputs = torch.cat(outputs, 0)
                         
-                        n_steps = hidden_group.size(0)
-                        hidden_group = hidden_group.view(-1, hidden_group.size(2))
-                        output_group = self.generator(hidden_group)
-                        output_group = output_group.view(n_steps, -1, output_group.size(1))
-                        outputs.append(output_group)
-                
-                # concatenate into one single tensor
-                outputs = torch.cat(outputs, 0)
-                        
-                
-                # Here we loop over the input
-                #~ for t, input_t in enumerate(tgt.split(1)):
-                #~ 
-                #~ use_teacher_forcing = random.random() <= teacher_forcing_ratio
-                #~ 
-                #~ 
-                #~ if not use_teacher_forcing and t > 1:
-                        #~ topv, topi = outputs[t-1].data.topk(1)
-                        #~ 
-                        #~ input_t = Variable(topi.t())
-                        #~ 
-                #~ state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
-                #~ 
-                #~ state = state.squeeze(0)
-                #~ states.append(state)
-                #~ 
-                #~ # from the state, compute the probability distribution
-                #~ output = self.generator(state)
-                #~ 
-                #~ outputs.append(output)
-                #~ 
-                #~ # compute loss
-                #~ loss_t = self.criterion(output, tgt_label[t])
-                #~ 
-                #~ if t == 0:
-                        #~ loss = loss_t
-                #~ else:
-                        #~ loss = loss + loss_t
                 
                 
-                return outputs, states
+            return outputs, states
 
-        # Reinforcement learning as in
+        # REINFORCE as in
         # Self critical Reinforcement Learning
         elif mode == 'rf' or mode == 'reinforce':
-                # initial token (BOS)
-                init_input = self.make_init_input(src)
-                
-                # save=True so that the stochastic actions will be saved for the backward pass
-                rl_samples, lengths, logprobs = self.sample_from_context(context, init_output, enc_hidden, 
-                                                init_input, argmax=False, max_length=min(length + 2, 50), save=True)
-                # By default: the baseline is the samples from greedy search
-                
-                if gen_greedy:
-                        greedy_samples, greedy_lengths, _ = self.sample_from_context(context, init_output, enc_hidden, 
-                                                            init_input, argmax=True, max_length=min(length + 2, 50))                                                                                                                                                                 
-                                                                
-                        #~ greedy_samples = greedy_samples.detach()
-                        #~ greedy_lengths = greedy_lengths.detach()
-                        return rl_samples, lengths, greedy_samples, greedy_lengths
-                else:
-                        return rl_samples, lengths
+            # initial token (BOS)
+            init_input = self.make_init_input(src)
+            
+            # save=True so that the stochastic actions will be saved for the backward pass
+            rl_samples, logprobs = self.sample_from_context(context, init_output, enc_hidden, 
+                                            init_input, argmax=False, max_length=min(length + 5, 50), save=True)
+            # By default: the baseline is the samples from greedy search
+            
+            if gen_greedy:
+                greedy_samples,  _ = self.sample_from_context(context, init_output, enc_hidden, 
+                                                    init_input, argmax=True, max_length=min(length + 5, 51))                                                                                                                                                                 
+                return rl_samples, greedy_samples
+            else:
+                return rl_samples
         
+        # Actor Critic
+        # We only sample, the baseline scores are handled by another critic model
+        elif mode == 'ac':
+            
+            # initial token (BOS)
+            init_input = self.make_init_input(src)
         
+            # save=True so that the stochastic actions will be saved for the backward pass
+            rl_samples, logprobs = self.sample_from_context(context, init_output, enc_hidden, 
+                                            init_input, argmax=False, max_length=min(length + 5, 50), save=True)
 
-
+            return rl_samples
+            
+            
 class Generator(nn.Module):
-        def __init__(self, inputSize, dicts):
-                
-                super(Generator, self).__init__()
-                
-                self.inputSize = inputSize
-                self.outputSize = dicts.size()
-                
-                self.net = nn.Sequential(
-                nn.Linear(inputSize, self.outputSize),
-                nn.LogSoftmax())
+    def __init__(self, inputSize, dicts):
+            
+            super(Generator, self).__init__()
+            
+            self.inputSize = inputSize
+            self.outputSize = dicts.size()
+            
+            self.net = nn.Sequential(
+            nn.Linear(inputSize, self.outputSize),
+            nn.LogSoftmax())
 
-        def forward(self, input):
-                return self.net(input)
+    def forward(self, input):
+            return self.net(input)
+
+
+# The critic generator is only a linear regressor         
+class CriticGenerator(nn.Module):
+    
+    def __init__(self, inputSize):
+            
+        super(CriticGenerator, self).__init__()
+        
+        self.inputSize = inputSize
+        
+        # map the hidden state to a value
+        self.net = nn.Linear(inputSize, 1)
+            
+
+    def forward(self, input):
+        return self.net(input)
+
+
+class CriticModel(RecurrentEncoderDecoder):
+
+    def __init__(self, encoder, decoder, generator):
+        super(CriticModel, self).__init__(encoder, decoder, generator)
+        
+    def forward(self, src, samples ):
+        
+        # forward through the encoder first
+        enc_hidden, context = self.encoder(src)
+        
+        init_output = self.make_init_decoder_output(context)
+
+        enc_hidden = (self._fix_enc_hidden(enc_hidden[0]),
+                      self._fix_enc_hidden(enc_hidden[1]))
+                      
+        states = []
+        
+        outputs = []
+        
+        hidden = enc_hidden
+        state = init_output
+        batch_size = samples.size(1) 
+        length = samples.size(0)
+        
+        # forward through the critic decoder 
+        hiddens, dec_hidden, _attn = self.decoder(samples, enc_hidden,
+                  context, init_output)
+        
+        # reshae to batch * length x hidden_size
+        reshaped_hiddens = hiddens.view(-1, hiddens.size(-1)) 
+        
+        # batch * length x 1
+        critic_output = self.generator(reshaped_hiddens) 
+        
+        # reshape back to length x batch x 1
+        critic_output = critic_output.view(length, batch_size) 
+        
+        return critic_output

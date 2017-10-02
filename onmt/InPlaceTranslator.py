@@ -43,8 +43,8 @@ class InPlaceTranslator(object):
         # This needs to be the same as preprocess.py.
         
         srcData = [self.src_dict.convertToIdx(b,
-																							onmt.Constants.UNK_WORD)
-																										for b in srcBatch]
+                    onmt.Constants.UNK_WORD)
+                    for b in srcBatch]
 
         tgtData = None
         if goldBatch:
