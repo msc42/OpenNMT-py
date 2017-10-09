@@ -159,3 +159,12 @@ class Dataset(object):
     def shuffle(self):
         data = list(zip(self.src, self.tgt))
         self.src, self.tgt = zip(*[data[i] for i in torch.randperm(len(data))])
+
+
+class DataIterator(object):
+    def __init__(self, dataset, num_workers):
+        self.dataset = dataset
+        self.num_workers = num_workers
+        
+        
+    

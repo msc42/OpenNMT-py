@@ -96,7 +96,7 @@ def sentence_gleu(reference, hypothesis, min_len=1, max_len=4):
     tp = sum(overlap_ngrams.values())  # True positives, i.e. numerator.
     n_all = max(tpfp, tpfn) # denominator.
     this_gleu = Fraction(tp, n_all, _normalize=False)
-    return float(this_gleu)
+    return (float(this_gleu),)
     
     # While GLEU is defined as the minimum of precision and
             # recall, we can reduce the number of division operations by one by

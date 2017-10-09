@@ -7,6 +7,7 @@ import onmt.modules
 from onmt.metrics.gleu import sentence_gleu
 from onmt.metrics.sbleu import sentence_bleu
 from onmt.metrics.bleu import moses_multi_bleu
+from onmt.metrics.hit import HitMetrics
 from onmt.trainer.Evaluator import Evaluator
 from onmt.utils import split_batch, compute_score
 import argparse
@@ -23,6 +24,8 @@ import numpy as np
 
 parser = argparse.ArgumentParser(description='train.py')
 onmt.Markdown.add_md_help_argument(parser)
+
+
 
 # Data options
 
@@ -106,12 +109,16 @@ parser.add_argument('-extra_shuffle', action="store_true",
 # for reinforcement learning
 parser.add_argument('-reinforce_rate', type=float, default=0.0,
                     help='Rate of using reinforcement learning during training')
+parser.add_argument('-hit_alpha', type=float, default=0.5,
+                    help='Rate of balancing gleu and hit')
 parser.add_argument('-reinforce_metrics', default='gleu',
                     help='Metrics for reinforcement learning. Default = gleu')
 parser.add_argument('-reinforce_sampling_number', type=int, default=1,
                     help='Number of samples during reinforcement learning')
 parser.add_argument('-actor_critic', action='store_true',
-                    help='Use actor critic algorithm (default is self-critical')             
+                    help='Use actor critic algorithm (default is self-critical)')             
+parser.add_argument('-normalize_rewards', action='store_true',
+                    help='Normalize the rewards')     
 parser.add_argument('-pretrain_critic', action='store_true',
                     help='Pretrain the critic')             
 # learning rate
@@ -146,6 +153,8 @@ parser.add_argument('-pre_word_vecs_dec',
 # GPU
 parser.add_argument('-gpus', default=[], nargs='+', type=int,
                     help="Use CUDA on the listed devices.")
+parser.add_argument('-disable_cudnn', action='store_true',
+                    help='Use a bidirectional encoder')
 parser.add_argument('-seed', default=9999, nargs='+', type=int,
                     help="Seed for deterministic runs.")
 
@@ -153,7 +162,7 @@ parser.add_argument('-log_interval', type=int, default=100,
                     help="Print stats at this interval.")
 parser.add_argument('-save_every', type=int, default=-1,
                     help="Save every this interval.")
-parser.add_argument('-sample_every', type=int, default=5000,
+parser.add_argument('-sample_every', type=int, default=1e99,
                     help="Save every this interval.")
 
 parser.add_argument('-valid_src', default='',
@@ -167,11 +176,9 @@ if opt.computational_batch_size <= 0 :
 
 print(opt)
 
-if opt.reinforce_metrics == 'gleu':
-    score = sentence_gleu
-elif opt.reinforce_metrics == 'sbleu':
-    score = sentence_bleu
 
+
+print '__PYTORCH VERSION:', torch.__version__
 
 
 if torch.cuda.is_available() and not opt.gpus:
@@ -181,12 +188,31 @@ if opt.gpus:
     cuda.set_device(opt.gpus[0])
     cuda.manual_seed_all(opt.seed)
     
+    print('__CUDA VERSION')
+    from subprocess import call
+    call(["nvcc", "--version"])
+    
+    if not opt.disable_cudnn:
+        print '__CUDNN VERSION:', torch.backends.cudnn.version()
+    else:
+        torch.backends.cudnn.enabled = False
+    
+    
     
     #~ device_name = cuda.get_device_name(opt.gpus[0])
     #~ print("Using CUDA on %s" % device_name)
 
 
 torch.manual_seed(opt.seed)
+
+# METRICS for REINFORCE
+if opt.reinforce_metrics == 'gleu':
+    score = sentence_gleu
+elif opt.reinforce_metrics == 'sbleu':
+    score = sentence_bleu
+elif opt.reinforce_metrics == 'hit':
+    scorer = HitMetrics(opt.hit_alpha)
+    score = scorer.hit
 
 def NMTCriterion(vocabSize):
     weight = torch.ones(vocabSize)
@@ -243,7 +269,7 @@ def sample(model, batch, dicts, eval=False):
         
         print "   REF :", refSent
         
-        s = score(refWords, tgtWords)
+        s = score(refWords, tgtWords)[0]
         
         print "Score =", s
     
@@ -308,7 +334,9 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 train_mode = 'rf' # default reinforce mode = self critical
                 if opt.actor_critic: 
                     train_mode = 'ac'
-                    
+            
+            # switch mode: display necessary information based on 
+            # XE or RF
             stats.switch_mode(train_mode)
                         
                 # For Cross Entropy mode training        
@@ -365,7 +393,11 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 rf_rewards = (sampled_reward - greedy_reward) / batch_size
                 
                 # centralize the rewards to make learning faster ?
-                rf_rewards = (rf_rewards - rf_rewards.mean()) / (rf_rewards.std() + np.finfo(np.float32).eps)
+                # it can cause a GPU error when batch size < 100 (probably numerical error with float32)
+                if opt.normalize_rewards:  
+                    rf_rewards = (rf_rewards - rf_rewards.mean()) / (rf_rewards.std() + np.finfo(np.float32).eps)
+                
+                #~ rf_rewards.mul_(10)
                 
                 # Reward cumulative backward:
                 length = rl_actions.size(0)
@@ -376,21 +408,13 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                     mask_t = seq_mask[t]
                     
                     reward_t = torch.mul(reward_t , mask_t)
-                    
-                    #~ print(reward_t)
-                    #~ print(seq_mask[t])
-                    
-                    # a little hack here: since we only have reward at the last step
-                    # so the cumulative is the reward itself at every time step
-                    #~ for b in xrange(batch_size):
-                        # important: reward for PAD tokens = 0
-                        #~ if t+1 > rl_lengths[b]:
-                            #~ reward_t[b] = 0
-                    #~ reward_t = reward_t * seq_mask[t]
                             
                     model.saved_actions[t].reinforce(reward_t.unsqueeze(0).t())
+                    
+                del greedy_reward
+                del greedy_actions
                 
-                # We backward from stochastic actions, ignoring the gradOutputs
+                # We backward from stochastic actions, ignoring the gradOutputs (that's why None)
                 torch.autograd.backward(model.saved_actions, [None for _ in model.saved_actions])
                 
                 # Update the parameters and free the action list.    
@@ -415,12 +439,10 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 # feed the actions into the critic, to predict the state values (V):
                 
                 critic_input = Variable(rl_actions.data, requires_grad=False)
-                #~ rl_actions.detach()
                 critic_output = critic(batch[0], critic_input)
                 
                 # mask: L x B
                 seq_mask = rl_actions.data.ne(onmt.Constants.PAD).float()
-                #~ print(seq_mask)
                 num_words_sampled = torch.sum(seq_mask)
                 stats.report_sampled_words += num_words_sampled
                 
@@ -431,13 +453,6 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 # compute loss for the critic
                 # first we have to expand the reward
                 expanded_reward = sampled_reward.unsqueeze(0).expand_as(seq_mask)
-                #~ print(expanded_reward)
-                #~ expanded_reward = torch.cuda.FloatTensor([sampled_reward] * rl_actions.size(0)).contiguous()
-                #~ expanded_reward = expanded_reward.cuda()
-                
-                
-                
-                #~ critic_output = critic_output.squeeze(2)
                 
                 # compute weighted loss for critic
                 reward_variable = Variable(expanded_reward)
@@ -456,7 +471,6 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                     model_reward = (expanded_reward - critic_output.data) * seq_mask
                     length = rl_actions.size(0)
                     for t in xrange(length):
-                        #~ reward_t = expanded_reward
                         model.saved_actions[t].reinforce(model_reward[t].unsqueeze(0).t())
                         
                     # We backward from stochastic actions, ignoring the gradOutputs
@@ -513,8 +527,10 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 valid_loss = evaluator.eval_perplexity(validData, criterion)
                 valid_ppl = math.exp(min(valid_loss, 100))
                 valid_bleu = evaluator.eval_translate(batch_size = opt.eval_batch_size)
+                valid_score = evaluator.eval_reinforce(validData, score)
                 print('Validation perplexity: %g' % valid_ppl)
                 print('Validation BLEU: %.2f' % valid_bleu)
+                print('Validation score: %.2f' % valid_score)
                 
                 if critic is not None:
                     valid_critic_loss = evaluator.eval_critic(validData, dicts, score)
@@ -544,11 +560,11 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                         'critic': critic_state_dict
                 }
                 
-                file_name = '%s_ppl_%.2f_bleu_%.2f_e%.2f.pt'
-                print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, ep))
+                file_name = '%s_ppl_%.2f_score_%.2f_bleu_%.2f_e%.2f.pt'
+                print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, valid_score, ep))
                 torch.save(checkpoint,
                                      file_name
-                                     % (opt.save_model, valid_ppl, valid_bleu, ep))
+                                     % (opt.save_model, valid_ppl, valid_bleu, valid_score, ep))
         return stats.total_loss_xe / (stats.total_words_xe + 1e-6)
 
     for epoch in range(opt.start_epoch, opt.start_epoch + opt.epochs):
@@ -563,8 +579,10 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
         valid_loss = evaluator.eval_perplexity(validData, criterion)
         valid_ppl = math.exp(min(valid_loss, 100))
         valid_bleu = evaluator.eval_translate(batch_size = opt.eval_batch_size)
+        valid_score = evaluator.eval_reinforce(validData, score)
         print('Validation perplexity: %g' % valid_ppl)
         print('Validation BLEU: %.2f' % valid_bleu)
+        print('Validation score: %.2f' % valid_score)
         
         if critic is not None:
             valid_critic_loss = evaluator.eval_critic(validData, dicts, score)
@@ -596,10 +614,10 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
         }
         
                 
-        file_name = '%s_ppl_%.2f_bleu_%.2f_e%d.pt'
-        print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, epoch))
+        file_name = '%s_ppl_%.2f_score_%.2f_bleu_%.2f_e%d.pt'
+        print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, valid_score, epoch))
         torch.save(checkpoint,
-                   file_name % (opt.save_model, valid_ppl, valid_bleu, epoch))
+                   file_name % (opt.save_model, valid_ppl, valid_bleu, valid_score, epoch))
 
 
 def main():
@@ -709,14 +727,6 @@ def main():
     if len(opt.gpus) > 1:
         model = nn.DataParallel(model, device_ids=opt.gpus, dim=1)
     
-    #~ else:
-        #~ print('Loading optimizer from checkpoint:')
-        #~ optim = checkpoint['optim']
-        #~ print(optim)
-        #~ # Force change learning rate
-        #~ optim.lr = opt.learning_rate
-        #~ optim.start_decay_at = opt.start_decay_at
-        #~ optim.start_decay = False
     
     if opt.reset_optim or not opt.train_from_state_dict:    
         
@@ -756,7 +766,6 @@ def main():
             #~ checkpoint['optim'].optimizer.state_dict())
             
     #~ gBuffer = onmt.GradientBuffer(model)
-    #~ gBuffer = onmt.GradientBuffer(model)
 
     nParams = sum([p.nelement() for p in model.parameters()])
     print('* number of parameters: %d' % nParams)
@@ -765,15 +774,15 @@ def main():
     evaluator = Evaluator(model, critic, dataset, opt.valid_src, opt.valid_tgt, cuda=(len(opt.gpus) >= 1))
                                               
     
-    #~ bleu_score = evaluator.eval_translate(batch_size = opt.eval_batch_size)
+    
     
     #~ valid_loss = evaluator.eval_perplexity(validData, criterion)
     #~ valid_ppl = math.exp(min(valid_loss, 100))
-    
-   
-        
-    
-    #~ print('* Initial BLEU score : %.2f' % bleu_score)
+    valid_score = evaluator.eval_reinforce(validData, score, verbose=False) # verbose=True just for debugging
+     
+    bleu_score = evaluator.eval_translate(batch_size = opt.eval_batch_size)
+    print('* Initial BLEU score : %.2f' % bleu_score)
+    print('* Initial RF Score : %.2f' % valid_score)
     #~ print('* Initial Perplexity : %.2f' % valid_ppl)
     
     if critic is not None:

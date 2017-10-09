@@ -5,12 +5,46 @@ import onmt.modules
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
 import random
+import rnnlib 
 
-
-
+#~ class CustomEncoder(nn.Module):
+#~ 
+    #~ def __init__(self, opt, dicts, embeddings):
+        #~ self.layers = opt.layers
+        #~ self.num_directions = 2 if opt.brnn else 1
+        #~ assert opt.rnn_size % self.num_directions == 0
+        #~ self.hidden_size = opt.rnn_size // self.num_directions
+        #~ input_size = opt.word_vec_size
+        #~ dropout_value = opt.dropout 
+#~ 
+        #~ super(Encoder, self).__init__()
+        #~ 
+        #~ self.word_lut = embeddings
+        #~ self.rnn = nn.LSTM(input_size, self.hidden_size,
+                           #~ num_layers=opt.layers,
+                           #~ dropout=dropout_value,
+                           #~ bidirectional=opt.brnn)
+                           #~ 
+    #~ def load_pretrained_vectors(self, opt):
+        #~ if opt.pre_word_vecs_enc is not None:
+            #~ pretrained = torch.load(opt.pre_word_vecs_enc)
+            #~ self.word_lut.weight.data.copy_(pretrained)
+#~ 
+    #~ def forward(self, input, hidden=None):
+        #~ if isinstance(input, tuple):
+            #~ # Lengths data is wrapped inside a Variable.
+            #~ lengths = input[1].data.view(-1).tolist()
+            #~ emb = pack(self.word_lut(input[0]), lengths)
+        #~ else:
+            #~ emb = self.word_lut(input)
+        #~ outputs, hidden_t = self.rnn(emb, hidden)
+        #~ if isinstance(input, tuple):
+            #~ outputs = unpack(outputs)[0]
+        #~ return hidden_t, outputs
+        
 class Encoder(nn.Module):
 
-    def __init__(self, opt, dicts, embeddings):
+    def __init__(self, opt, dicts, embeddings, custom=False):
         self.layers = opt.layers
         self.num_directions = 2 if opt.brnn else 1
         assert opt.rnn_size % self.num_directions == 0
@@ -21,38 +55,75 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         
         self.word_lut = embeddings
-        self.rnn = nn.LSTM(input_size, self.hidden_size,
-                           num_layers=opt.layers,
-                           dropout=dropout_value,
-                           bidirectional=opt.brnn)
+        self.custom = custom
+        
+        if custom != True:
+            self.rnn = nn.LSTM(input_size, self.hidden_size,
+                               num_layers=opt.layers,
+                               dropout=dropout_value,
+                               bidirectional=opt.brnn)
+        else:
+            self.rnn = rnnlib.RecurrentLayer(rnnlib.Cells.LSTMCell, input_size, opt.rnn_size,
+                                             num_layers=opt.layers, dropout=dropout_value,
+                                             bidirectional=opt.brnn)
 
     def load_pretrained_vectors(self, opt):
         if opt.pre_word_vecs_enc is not None:
             pretrained = torch.load(opt.pre_word_vecs_enc)
             self.word_lut.weight.data.copy_(pretrained)
+    
+    def init_hidden(self, emb, batch_size):
+        
+        hidden = []
+        
+        for i in xrange(self.layers):
+            
+            for j in xrange(self.num_directions):
+                # allocate the initial hidden state
+                h = Variable(emb.data.new(batch_size, self.hidden_size).zero_())
+                c = Variable(emb.data.new(batch_size, self.hidden_size).zero_())
+                hidden.append((h,c))
+        
+        
+        return hidden
+        
 
     def forward(self, input, hidden=None):
+        #~ print isinstance(input, tuple)
         if isinstance(input, tuple):
             # Lengths data is wrapped inside a Variable.
             lengths = input[1].data.view(-1).tolist()
+            batch_size = input[0].size(1)
             emb = pack(self.word_lut(input[0]), lengths)
+            emb_data = emb[0]
         else:
+            batch_size = input.size(1)
             emb = self.word_lut(input)
+            emb_data = emb
+        
+        if hidden is None and self.custom:
+            hidden = self.init_hidden(emb_data, batch_size)
+        
         outputs, hidden_t = self.rnn(emb, hidden)
+        #~ print(outputs)
         if isinstance(input, tuple):
             outputs = unpack(outputs)[0]
         return hidden_t, outputs
 
 
 class StackedLSTM(nn.Module):
-    def __init__(self, num_layers, input_size, rnn_size, dropout):
+    def __init__(self, num_layers, input_size, rnn_size, dropout, custom=False):
         super(StackedLSTM, self).__init__()
         self.dropout = nn.Dropout(dropout)
         self.num_layers = num_layers
         self.layers = nn.ModuleList()
+        
+        cell = nn.LSTMCell
+        if custom == True:
+            cell = rnnlib.Cells.LSTMCell
 
         for i in range(num_layers):
-            self.layers.append(nn.LSTMCell(input_size, rnn_size))
+            self.layers.append(cell(input_size, rnn_size))
             input_size = rnn_size
 
     def forward(self, input, hidden):
@@ -74,7 +145,7 @@ class StackedLSTM(nn.Module):
 
 class Decoder(nn.Module):
 
-    def __init__(self, opt, dicts, embeddings):
+    def __init__(self, opt, dicts, embeddings, custom=False):
         self.layers = opt.layers
         self.input_feed = opt.input_feed
         input_size = opt.word_vec_size
@@ -87,7 +158,7 @@ class Decoder(nn.Module):
                                      #~ padding_idx=onmt.Constants.PAD)
         self.word_lut = embeddings
         self.rnn = StackedLSTM(opt.layers, input_size,
-                               opt.rnn_size, opt.dropout)
+                               opt.rnn_size, opt.dropout, custom=custom)
         self.attn = onmt.modules.GlobalAttention(opt.rnn_size)
         self.dropout = nn.Dropout(opt.dropout)
 
@@ -216,7 +287,13 @@ class NMTModel(RecurrentEncoderDecoder):
         
         if not save:
             context = Variable(context.data, volatile=True)
-            #~ hidden = Variable(hidden.data, volatile=True)
+            
+            hidden_new = list()
+            for h in hidden:
+                hidden_new.append(Variable(h.data, volatile=True))
+            
+            hidden = tuple(hidden_new)
+            
             state = Variable(state.data, volatile=True)
             input_t = Variable(input_t.data, volatile=True)
         
@@ -358,7 +435,7 @@ class NMTModel(RecurrentEncoderDecoder):
             
             # save=True so that the stochastic actions will be saved for the backward pass
             rl_samples, logprobs = self.sample_from_context(context, init_output, enc_hidden, 
-                                            init_input, argmax=False, max_length=min(length + 5, 50), save=True)
+                                            init_input, argmax=False, max_length=min(length + 5, 51), save=True)
             # By default: the baseline is the samples from greedy search
             
             if gen_greedy:

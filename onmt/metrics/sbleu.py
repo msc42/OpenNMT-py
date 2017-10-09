@@ -111,6 +111,6 @@ def sentence_bleu(ref, hyp):
 	
 	refCounts, refLength = getRefCounts(ref)
 	sbleu = calc(refCounts,refLength,hyp)
-	return sbleu
+	return (sbleu,)
 	
 	
