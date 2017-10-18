@@ -188,10 +188,6 @@ if opt.gpus:
     cuda.set_device(opt.gpus[0])
     cuda.manual_seed_all(opt.seed)
     
-    print('__CUDA VERSION')
-    from subprocess import call
-    call(["nvcc", "--version"])
-    
     if not opt.disable_cudnn:
         print '__CUDNN VERSION:', torch.backends.cudnn.version()
     else:
@@ -372,7 +368,7 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 ref = batch[1][1:]
                 batch_size = ref.size(1)
                 # Monte-Carlo actions and greedy actions to be sampled
-                rl_actions, greedy_actions = model(batch, mode=train_mode)
+                rl_actions, greedy_actions, logprobs, entropies = model(batch, mode=train_mode)
                 
                 # reward for samples from stochastic function
                 sampled_reward = compute_score(score, rl_actions, ref, dicts, batch_size) 
@@ -401,23 +397,39 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 
                 # Reward cumulative backward:
                 length = rl_actions.size(0)
-                for t in xrange(length):
-                    
-                    reward_t = rf_rewards.clone()
-                    
-                    mask_t = seq_mask[t]
-                    
-                    reward_t = torch.mul(reward_t , mask_t)
-                            
-                    model.saved_actions[t].reinforce(reward_t.unsqueeze(0).t())
+                weight_variable = Variable(seq_mask)
+                expanded_reward = rf_rewards.unsqueeze(0).expand_as(seq_mask)
+                reward_variable = Variable(expanded_reward)
+                
+                # REINFORCE loss (Sutton et al. 1992)
+                action_loss = -(logprobs * reward_variable * weight_variable).sum()
+                
+                action_loss.div(batch_size)
+                
+                entropy_loss = torch.sum(entropies * weight_variable)
+                
+                loss = action_loss - 0.01 * entropy_loss.div(num_words_sampled)
+                
+                loss.backward()
+                #~ for t in xrange(length):
+                    #~ 
+                    #~ reward_t = rf_rewards.clone()
+                    #~ 
+                    #~ mask_t = seq_mask[t]
+                    #~ 
+                    #~ reward_t = torch.mul(reward_t , mask_t)
+                            #~ 
+                    #~ model.saved_actions[t].reinforce(reward_t.unsqueeze(0).t())
                     
                 del greedy_reward
                 del greedy_actions
                 
                 # We backward from stochastic actions, ignoring the gradOutputs (that's why None)
-                torch.autograd.backward(model.saved_actions, [None for _ in model.saved_actions])
-                
+                #~ torch.autograd.backward(model.saved_actions, [None for _ in model.saved_actions])
+                #~ 
                 # Update the parameters and free the action list.    
+                for action in model.saved_actions:
+                    del action
                 model.saved_actions = []
             
             elif train_mode == "ac":
@@ -435,6 +447,8 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                     rl_actions  = model.sample((variable, length), argmax=False)
                 else:
                     rl_actions  = model(batch, mode=train_mode)
+                    
+                length = rl_actions.size(0)
                 
                 # feed the actions into the critic, to predict the state values (V):
                 
@@ -454,10 +468,21 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 # first we have to expand the reward
                 expanded_reward = sampled_reward.unsqueeze(0).expand_as(seq_mask)
                 
+                #~ print(expanded_reward)
+                #~ print(seq_mask)
+                
                 # compute weighted loss for critic
+                #~ reward_seq = torch.FloatTensor([sampled_reward] * length)
+                #~ if opt.
+                #~ reward_variable = Variable(reward_seq).contiguous()
                 reward_variable = Variable(expanded_reward)
                 weight_variable = Variable(seq_mask)
-                critic_loss = onmt.modules.Loss.weighted_mse_loss(critic_output, reward_variable, weight_variable)
+                #~ critic_loss = onmt.modules.Loss.weighted_mse_loss(critic_output, reward_variable, weight_variable)
+                
+                # mean squared error loss
+                advantage = weight_variable * (critic_output - reward_variable) 
+                critic_loss = torch.sum(advantage.pow(2))
+                
                 stats.total_critic_loss += critic_loss.data[0]
                 
                 
@@ -468,10 +493,14 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 
                 if not opt.pretrain_critic:
                     # update the actor (nmt model)
-                    model_reward = (expanded_reward - critic_output.data) * seq_mask
+                    model_reward = -advantage.data
+                    model_reward.div(batch_size) # important: normalize by batch-size 
+                    
+                    reward_steps = model_reward.chunk(length, dim=0)
+                    #~ print(model_reward)
                     length = rl_actions.size(0)
                     for t in xrange(length):
-                        model.saved_actions[t].reinforce(model_reward[t].unsqueeze(0).t())
+                        model.saved_actions[t].reinforce(reward_steps[t].t())
                         
                     # We backward from stochastic actions, ignoring the gradOutputs
                     torch.autograd.backward(model.saved_actions, [None for _ in model.saved_actions])
@@ -514,7 +543,7 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
             stats.report_tgt_words += num_words
 
             # Sampling (experimental):
-            if i % opt.sample_every == -1 % opt.sample_every:
+            if i % opt.sample_every == -1 % opt.sample_every and opt.sample_every > 0:
                 sample(model, batch, dicts)
 
             
@@ -538,11 +567,10 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 
                 model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
                 else model.state_dict())
-                model_state_dict = {k: v for k, v in model_state_dict.items()}
+                #~ model_state_dict = {k: v for k, v in model_state_dict.items()}
                 
                 if critic is not None:
                     critic_state_dict = critic.state_dict()
-                    critic_state_dict = {k: v for k, v in critic_state_dict.items()}
                 else:
                     critic_state_dict = None
                 
@@ -550,7 +578,6 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 ep = float(epoch) - 1 + (i + 1) / nSamples
                 checkpoint = {
                         'model': model_state_dict,
-                        #~ 'generator': generator_state_dict,
                         'dicts': dataset['dicts'],
                         'opt': opt,
                         'epoch': ep,
@@ -589,7 +616,7 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
             print('* Valid Critic Loss : %.4f' % valid_critic_loss)
 
         #  (3) update the learning rate
-        optim.updateLearningRate(valid_ppl, epoch)
+        #~ optim.updateLearningRate(valid_ppl, epoch)
 
         model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
                             else model.state_dict())
@@ -615,9 +642,9 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
         
                 
         file_name = '%s_ppl_%.2f_score_%.2f_bleu_%.2f_e%d.pt'
-        print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_bleu, valid_score, epoch))
+        print('Writing to ' + file_name % (opt.save_model, valid_ppl, valid_score, valid_bleu, epoch))
         torch.save(checkpoint,
-                   file_name % (opt.save_model, valid_ppl, valid_bleu, valid_score, epoch))
+                   file_name % (opt.save_model, valid_ppl, valid_score, valid_bleu, epoch))
 
 
 def main():

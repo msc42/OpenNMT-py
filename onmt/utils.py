@@ -103,7 +103,7 @@ def createCritic(opt, dicts, embeddings):
     
     critic_opt = copy.deepcopy(opt)
     # disable dropout on critic
-    critic_opt.dropout = 0
+    #~ critic_opt.dropout = 0.5
     
     encoder = onmt.Models.Encoder(critic_opt, dicts['src'], embeddings[0])
     
