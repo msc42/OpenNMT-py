@@ -274,7 +274,7 @@ class NMTModel(RecurrentEncoderDecoder):
     # We need the context, the initial hidden layer, the initial state (for input feed) and an initial input
     # Options are: using argmax or stochastic, and to save the stochastic actions for reinforcement learning
     def sample_from_context(self, context, init_state, init_hiddens, init_input, 
-                                max_length=50, save=False, argmax=True):
+                                max_length=50, save=False, argmax=True, gen_entropy=False):
                         
         hidden = init_hiddens
         state = init_state
@@ -327,7 +327,9 @@ class NMTModel(RecurrentEncoderDecoder):
                 sample = sample_.data
                 
                 # entropy : -p logp 
-                entropy = -(dist * output).sum(-1).unsqueeze(0) # Batch x 1
+                if gen_entropy:
+                    entropy = -(dist * output).sum(-1).unsqueeze(0) # Batch x 1
+                    entropies.append(entropy)
                 
             # log_prob of action at time T
             
@@ -353,7 +355,7 @@ class NMTModel(RecurrentEncoderDecoder):
 
             if save:
                 assert argmax==False
-                entropies.append(entropy)
+                
                 #~ self.saved_actions.append(sample_)
             
              # stop sampling when all sentences reach eos 
@@ -376,7 +378,7 @@ class NMTModel(RecurrentEncoderDecoder):
                 
     # Forward pass :
     # Two (or more) modes: Cross Entropy or Reinforce
-    def forward(self, input, mode='xe', max_length=50, gen_greedy=True, timestep_group=8):
+    def forward(self, input, mode='xe', max_length=50, gen_greedy=True, gen_entropy=False, timestep_group=8):
         src = input[0]
         tgt = input[1][:-1]  # exclude last target from inputs
         # Exclude <s> from targets for labels
@@ -432,7 +434,7 @@ class NMTModel(RecurrentEncoderDecoder):
             
             # save=True so that the stochastic actions will be saved for the backward pass
             rl_samples, logprobs, entropies = self.sample_from_context(context, init_output, enc_hidden, 
-                                            init_input, argmax=False, max_length=min(length + 5, 51), save=True)
+                                            init_input, argmax=False, max_length=min(length + 5, 51), save=True, gen_entropy=gen_entropy)
             # By default: the baseline is the samples from greedy search
             
             if gen_greedy:

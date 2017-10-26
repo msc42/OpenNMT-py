@@ -120,7 +120,11 @@ parser.add_argument('-actor_critic', action='store_true',
 parser.add_argument('-normalize_rewards', action='store_true',
                     help='Normalize the rewards')     
 parser.add_argument('-pretrain_critic', action='store_true',
-                    help='Pretrain the critic')             
+                    help='Pretrain the critic')  
+parser.add_argument('-use_entropy', action='store_true',
+                    help='Use the entropy term in the A2C loss function)')             
+parser.add_argument('-entropy_coeff', type=float, default=0.01,
+                    help='Entropy coefficient in the A2C loss function.') 
 # learning rate
 parser.add_argument('-learning_rate', type=float, default=1.0,
                     help="""Starting learning rate. If adagrad/adadelta/adam is
@@ -301,9 +305,6 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
         if not batchOrder:
             batchOrder = torch.randperm(len(trainData))
 
-        #~ total_loss_xe, total_words_xe = 0, 0
-        #~ report_loss_xe, report_tgt_words_xe = 0, 0
-        #~ report_src_words, report_tgt_words = 0, 0
         stats = onmt.Stats(optim)
         nSamples = len(trainData)
         for i in range(nSamples):
@@ -317,13 +318,7 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
             num_words = targets.data.ne(onmt.Constants.PAD).sum()
             
             model.zero_grad()
-            
-            #~ if critic is not None:
-                
-            #~ gBuffer.zero_buffer()
-            
-            #~ def _train_f(minibatch, total_batch_size, stats):
-            
+
             train_mode = 'xe'
             # let's stick to one mode for now ?
             if 0 < opt.reinforce_rate:
@@ -335,7 +330,7 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
             # XE or RF
             stats.switch_mode(train_mode)
                         
-                # For Cross Entropy mode training        
+            # For Cross Entropy mode training        
             if train_mode == 'xe':
                 
                 outputs , _ = model(batch, mode=train_mode)               
@@ -363,12 +358,12 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 stats.total_loss_xe += loss_xe
                 stats.total_words_xe += num_words
                             
-                # For reinforcement learning mode
+            # For reinforcement learning mode
             elif train_mode == 'rf':
                 ref = batch[1][1:]
                 batch_size = ref.size(1)
                 # Monte-Carlo actions and greedy actions to be sampled
-                rl_actions, greedy_actions, logprobs, entropies = model(batch, mode=train_mode)
+                rl_actions, greedy_actions, logprobs, entropies = model(batch, mode=train_mode, gen_entropy=opt.use_entropy)
                 
                 # reward for samples from stochastic function
                 sampled_reward = compute_score(score, rl_actions, ref, dicts, batch_size) 
@@ -385,48 +380,51 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 greedy_reward = compute_score(score, greedy_actions, ref, dicts, batch_size) 
                 
                 # the REINFORCE reward to be the difference between MC and greedy
-                # should we manually divide rewards by batch size ? since we may have different batch size
-                rf_rewards = (sampled_reward - greedy_reward) / batch_size
+                rf_rewards = (sampled_reward - greedy_reward)
                 
                 # centralize the rewards to make learning faster ?
                 # it can cause a GPU error when batch size < 100 (probably numerical error with float32)
+                # and it doesn't seem to be very helpful for this case
                 if opt.normalize_rewards:  
                     rf_rewards = (rf_rewards - rf_rewards.mean()) / (rf_rewards.std() + np.finfo(np.float32).eps)
-                
-                #~ rf_rewards.mul_(10)
-                
+                                
                 # Reward cumulative backward:
                 length = rl_actions.size(0)
-                weight_variable = Variable(seq_mask)
+                weight_variable = Variable(seq_mask, requires_grad=False)
                 expanded_reward = rf_rewards.unsqueeze(0).expand_as(seq_mask)
-                reward_variable = Variable(expanded_reward)
+                reward_variable = Variable(expanded_reward, requires_grad=False)
                 
                 # REINFORCE loss (Sutton et al. 1992)
                 action_loss = -(logprobs * reward_variable * weight_variable).sum()
                 
+                # normalize the loss by batch size
                 action_loss.div(batch_size)
                 
-                entropy_loss = torch.sum(entropies * weight_variable)
+                loss = action_loss
                 
-                loss = action_loss - 0.01 * entropy_loss.div(num_words_sampled)
+                # Use another entropy term in A2C
+                if opt.use_entropy:
+                    entropy_loss = torch.sum(entropies * weight_variable)
+                    loss = loss - opt.entropy_coeff * entropy_loss.div(num_words_sampled)
                 
+                # back-prop and compute the gradients
                 loss.backward()
+                
+                # old-style with PyTorch provided reinforce function
+                # deprecated due to lack of efficiency and black-box as well
+                # will need to rewrite the actor critic as well
                 #~ for t in xrange(length):
-                    #~ 
                     #~ reward_t = rf_rewards.clone()
-                    #~ 
                     #~ mask_t = seq_mask[t]
-                    #~ 
                     #~ reward_t = torch.mul(reward_t , mask_t)
-                            #~ 
                     #~ model.saved_actions[t].reinforce(reward_t.unsqueeze(0).t())
-                    
+                
+                #~ torch.autograd.backward(model.saved_actions, [None for _ in model.saved_actions])
+                
                 del greedy_reward
                 del greedy_actions
                 
-                # We backward from stochastic actions, ignoring the gradOutputs (that's why None)
-                #~ torch.autograd.backward(model.saved_actions, [None for _ in model.saved_actions])
-                #~ 
+                
                 # Update the parameters and free the action list.    
                 for action in model.saved_actions:
                     del action
@@ -451,7 +449,6 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
                 length = rl_actions.size(0)
                 
                 # feed the actions into the critic, to predict the state values (V):
-                
                 critic_input = Variable(rl_actions.data, requires_grad=False)
                 critic_output = critic(batch[0], critic_input)
                 
@@ -792,24 +789,19 @@ def main():
         #~ optim.optimizer.load_state_dict(
             #~ checkpoint['optim'].optimizer.state_dict())
             
-    #~ gBuffer = onmt.GradientBuffer(model)
-
     nParams = sum([p.nelement() for p in model.parameters()])
     print('* number of parameters: %d' % nParams)
     
     global evaluator
     evaluator = Evaluator(model, critic, dataset, opt.valid_src, opt.valid_tgt, cuda=(len(opt.gpus) >= 1))
-                                              
-    
-    
-    
+
     #~ valid_loss = evaluator.eval_perplexity(validData, criterion)
     #~ valid_ppl = math.exp(min(valid_loss, 100))
-    valid_score = evaluator.eval_reinforce(validData, score, verbose=False) # verbose=True just for debugging
-     
+    
     bleu_score = evaluator.eval_translate(batch_size = opt.eval_batch_size)
     print('* Initial BLEU score : %.2f' % bleu_score)
-    print('* Initial RF Score : %.2f' % valid_score)
+    valid_score = evaluator.eval_reinforce(validData, score, verbose=False) # verbose=True just for debugging
+    print('* Initial RF Score : %.2f' % valid_score) 
     #~ print('* Initial Perplexity : %.2f' % valid_ppl)
     
     if critic is not None:

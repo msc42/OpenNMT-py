@@ -129,7 +129,8 @@ def main():
                 predBatch_.append([bb[s] for s in sidx])
                 predScore_.append([ss_[s] for s in sidx])
             predBatch = predBatch_
-            predScore = predScore_                                                      
+            predScore = predScore_    
+                                                              
         predScoreTotal += sum(score[0] for score in predScore)
         predWordsTotal += sum(len(x[0]) for x in predBatch)
         if tgtF is not None:
