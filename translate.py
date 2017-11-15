@@ -22,6 +22,8 @@ parser.add_argument('-tgt',
                     help='True target sequence (optional)')
 parser.add_argument('-tgt_lang',   default="de",
                     help='Target language')                    
+parser.add_argument('-ensemble_op',   default="sum",
+                    help='Operator for ensemble decoding. Choices: sum/logsum')                    
 parser.add_argument('-output', default='pred.txt',
                     help="""Path to output the predictions (each line will
                     be the decoded sequence""")
@@ -131,7 +133,7 @@ def main():
             
 
         for b in range(len(predBatch)):
-                        # Pred Batch always have n-best outputs  
+            # Pred Batch always have n-best outputs  
             #~ scores = torch.Tensor(len(predBatch[b]))
             #~ for n in range(opt.n_best):
                             #~ scores[n] = predScore[b][n]
@@ -142,11 +144,18 @@ def main():
             #~ bestSent = predBatch[b][sorted_index[0]]
             #~ bestIndex = sorted_index[0]
             count += 1
-                        # Best sentence = having highest log prob
+            # Best sentence = having highest log prob
 
             if not opt.print_nbest:
                 outF.write(" ".join(predBatch[b][0]) + '\n')
                 outF.flush()
+            else:
+                for n in range(opt.n_best):
+                    idx = n
+                    #~ if opt.verbose:
+                    print("%d ||| %s ||| %.6f" % (count-1, " ".join(predBatch[b][idx]), predScore[b][idx]))
+                    outF.write("%d ||| %s ||| %.6f\n" % (count-1, " ".join(predBatch[b][idx]), predScore[b][idx]))
+                    outF.flush()
 
             if opt.verbose:
                 srcSent = ' '.join(srcBatch[b])
@@ -162,14 +171,6 @@ def main():
                         tgtSent = tgtSent.lower()
                     print('GOLD %d: %s ' % (count, tgtSent))
                     print("GOLD SCORE: %.4f" % goldScore[b])
-
-                if opt.print_nbest :
-                    print('\nBEST HYP:')
-                    for n in range(opt.n_best):
-                                                idx = sorted_index[n]
-                                                print("[%.4f] %s" % (predScore[b][idx],
-                                             " ".join(predBatch[b][idx])))
-
                 print('')
 
         srcBatch, tgtBatch = [], []
