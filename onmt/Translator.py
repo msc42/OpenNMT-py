@@ -35,7 +35,13 @@ class Translator(object):
         nSets = 0
         
         for i, model in enumerate(models):
-            checkpoint = torch.load(model)
+            if opt.verbose:
+                print('Loading model from %s' % opt.model)
+            checkpoint = torch.load(opt.model,
+                               map_location=lambda storage, loc: storage)
+        
+            if opt.verbose:
+                print('Done')
 
             model_opt = checkpoint['opt']
             
