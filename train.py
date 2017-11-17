@@ -74,7 +74,7 @@ parser.add_argument('-batch_size', type=int, default=64,
                     help='Maximum batch size')
 parser.add_argument('-computational_batch_size', type=int, default=-1,
                     help='Maximum batch size for computation. By default it is the same as batch size. But we can split the large minibatch to fit in the GPU.')
-parser.add_argument('-max_generator_batches', type=int, default=64,
+parser.add_argument('-max_generator_batches', type=int, default=4,
                     help="""Maximum batches of words in a sequence to run
                     the generator on in parallel. Higher is faster, but uses
                     more memory.""")                   
@@ -333,7 +333,7 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
             # For Cross Entropy mode training        
             if train_mode == 'xe':
                 
-                outputs , _ = model(batch, mode=train_mode)               
+                outputs , _ = model(batch, mode=train_mode, timestep_group=opt.max_generator_batches)               
                 split_targets = batch[1][1:]
                 
                 flat_outputs = outputs.view(-1, outputs.size(-1))
@@ -613,7 +613,7 @@ def trainModel(model, trainData, validData, dataset, optims, criterion, critic):
             print('* Valid Critic Loss : %.4f' % valid_critic_loss)
 
         #  (3) update the learning rate
-        #~ optim.updateLearningRate(valid_ppl, epoch)
+        optim.updateLearningRate(valid_ppl, epoch)
 
         model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
                             else model.state_dict())
@@ -655,6 +655,8 @@ def main():
         print('Loading dicts from checkpoint at %s' % dict_checkpoint)
         checkpoint = torch.load(dict_checkpoint)
         dataset['dicts'] = checkpoint['dicts']
+    else:
+        checkpoint = None
 
     trainData = onmt.Dataset(dataset['train']['src'],
                              dataset['train']['tgt'], opt.batch_size, opt.gpus,
@@ -759,6 +761,9 @@ def main():
                 lr_decay=opt.learning_rate_decay,
                 start_decay_at=opt.start_decay_at
         )
+
+        if checkpoint is not None and 'optim' in checkpoint:
+             del checkpoint['optim']
     
     else:
          print('Loading optimizer from checkpoint:')

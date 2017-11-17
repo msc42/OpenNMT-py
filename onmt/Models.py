@@ -6,6 +6,7 @@ from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
 import random
 import rnnlib 
+import torch.nn.functional as F
 
 #~ class CustomEncoder(nn.Module):
 #~ 
@@ -321,6 +322,7 @@ class NMTModel(RecurrentEncoderDecoder):
                 
             else: # Stochastic sampling
                 dist = output.exp()
+                #~ dist = F.softmax(output)
                 
                 sample_ = dist.multinomial(1)
                 
@@ -334,7 +336,7 @@ class NMTModel(RecurrentEncoderDecoder):
             # log_prob of action at time T
             
             log_prob_t = output.gather(1, Variable(sample)).t() # 1 * batch_size
-            
+                        
             log_probs.append(log_prob_t) 
             
             # log prob of the samples
@@ -461,18 +463,22 @@ class NMTModel(RecurrentEncoderDecoder):
 class Generator(nn.Module):
     def __init__(self, inputSize, dicts):
             
-            super(Generator, self).__init__()
-            
-            self.inputSize = inputSize
-            self.outputSize = dicts.size()
-            
-            self.net = nn.Sequential(
-            nn.Linear(inputSize, self.outputSize),
-            nn.LogSoftmax())
+        super(Generator, self).__init__()
+        
+        self.inputSize = inputSize
+        self.outputSize = dicts.size()
+        
+        self.net = nn.Sequential(
+        nn.Linear(inputSize, self.outputSize),
+        nn.LogSoftmax())
 
-    def forward(self, input):
+    def forward(self, input, logsoftmax=True):
+            
+        if logsoftmax:
             return self.net(input)
-
+        else:
+            return self.net[0](input)
+            
 
 # The critic generator is only a linear regressor         
 class CriticGenerator(nn.Module):
