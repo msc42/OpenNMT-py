@@ -390,6 +390,8 @@ class Translator(object):
                     [[self.tgt_dict.getLabel(id)
                       for id in t.tolist()]
                      for t in beam[b].nextYs][1:])
+        
+        mask(None)
 
         return allHyp, allScores, allAttn, goldScores
 
