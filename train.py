@@ -91,6 +91,10 @@ parser.add_argument('-extra_shuffle', action="store_true",
                     shuffle and re-assign mini-batches""")
 parser.add_argument('-reinforce', action='store_true',
                     help="""Using reinforcement learning""")
+parser.add_argument('-reinforce_metrics', default='gleu',
+                    help="Type of metrics to use. Options are [gleu|hit].")    
+parser.add_argument('-hit_alpha', type=float, default=0.3,
+                    help='Dropout probability; applied between LSTM stacks.')
 
 # learning rate
 parser.add_argument('-learning_rate', type=float, default=1.0,

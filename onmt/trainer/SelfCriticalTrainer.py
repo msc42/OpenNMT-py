@@ -14,6 +14,8 @@ import time
 import random 
 import numpy as np
 from onmt.metrics.gleu import sentence_gleu
+from onmt.metrics.hit import HitMetrics
+
 
 
 def averagePPL(losses, counts):
@@ -67,7 +69,11 @@ class SCSTTrainer(object):
         
         self.criterions = onmt.Models.NMTCriterion(self.dicts['tgt'], cuda=(len(self.opt.gpus) >= 1))
         
-        self.score = sentence_gleu
+        if opt.reinforce_metrics == 'gleu':
+            self.score = sentence_gleu
+        elif opt.reinforce_metrics == 'hit':
+            hit_scorer = HitMetrics(opt.hit_alpha)
+            self.score = hit_scorer.hit
         
         # A flag for language - specific adapting
         self.adapt = False

@@ -13,6 +13,9 @@ from torch import cuda
 from torch.autograd import Variable
 import math
 
+from onmt.metrics.gleu import sentence_gleu
+from onmt.metrics.hit import HitMetrics
+
 class Evaluator(object):
     
     def __init__(self, model, dataset, opt, cuda=False):
@@ -37,6 +40,14 @@ class Evaluator(object):
             self.adapt_src = opt.adapt_src
             self.adapt_tgt = opt.adapt_tgt
             self.adapt_pair = opt.pairID
+            
+        if opt.reinforce_metrics == 'gleu':
+            self.score = sentence_gleu
+        elif opt.reinforce_metrics == 'hit':
+            hit_scorer = HitMetrics(opt.hit_alpha)
+            self.score = hit_scorer.hit
+        else:
+            raise NotImplementedError
             
         
     def setScore(self, score):
@@ -93,18 +104,82 @@ class Evaluator(object):
         
         model.train()
         return losses
-        
-    #~ def eval_reinforce(self, data, score, verbose=False):
-        #~ 
-        #~ total_score = 0
-        #~ total_sentences = 0
-        #~ 
-        #~ total_hit = 0
-        #~ total_hit_sentences = 0
-        #~ total_gleu = 0
+    
+    
+    # the only difference of this function and eval translate is that 
+    # the metrics is not BLEU, but the scorer
+    #~ def eval_reinforce(self, data, verbose=False, setIDs=None):
+    #~ 
+        #~ score = self.score
         #~ 
         #~ model = self.model
         #~ model.eval()
+        #~ 
+        #~ # return a list of scores for each language
+        #~ total_scores = dict()
+        #~ total_sentences = dict()
+        #~ 
+        #~ total_hit = 0
+        #~ total_hit_sentences = 0
+        #~ 
+        #~ for sid in data: # sid = setid
+            #~ if self.adapt:
+                #~ # if we are adapting then we only care about that pair
+                #~ if sid != self.adapt_pair:
+                    #~ continue
+                    #~ 
+            #~ dset = data[sid]
+            #~ model.switchLangID(setIDs[sid][0], setIDs[sid][1])
+            #~ model.switchPairID(sid)
+            #~ 
+            #~ tgt_lang = self.dicts['tgtLangs'][setIDs[sid][1]]
+            #~ src_lang = self.dicts['srcLangs'][setIDs[sid][0]]
+            #~ tgt_dict = self.dicts['vocabs'][tgt_lang]
+            #~ src_dict = self.dicts['vocabs'][src_lang]
+            #~ 
+            #~ for i in range(len(dset)):
+                #~ # exclude original indices
+                #~ batch = dset[i][:-1]
+                #~ 
+                #~ src = batch[0]
+                #~ 
+                #~ # exclude <s> from targets
+                #~ targets = batch[1][1:]
+                #~ 
+                #~ transposed_targets = targets.data.transpose(0, 1) # bsize x nwords
+                #~ 
+                #~ pred = self.translator.translate(src)
+                #~ 
+                #~ batch_size = len(pred)
+                #~ 
+                #~ for b in range(batch_size)
+                
+                #~ bpe_string = bpe_token + bpe_token + " "
+                #~ 
+                #~ for b in range(len(pred)):
+                    #~ 
+                    #~ ref_tensor = transposed_targets[b].tolist()
+                    #~ 
+                    #~ decodedSent = tgt_dict.convertToLabels(pred[b], onmt.Constants.EOS)
+                    #~ decodedSent = " ".join(decodedSent)
+                    #~ decodedSent = decodedSent.replace(bpe_string, '')
+                    #~ 
+                    #~ refSent = tgt_dict.convertToLabels(ref_tensor, onmt.Constants.EOS)
+                    #~ refSent = " ".join(refSent)
+                    #~ 
+                    #~ refSent = refSent.split('. ; .')[0]
+                    #~ 
+                    #~ refSent = refSent.replace(bpe_string, '')
+                    #~ 
+                    #~ 
+                    #~ # Flush the pred and reference sentences to temp files 
+                    #~ outF.write(decodedSent + "\n")
+                    #~ outF.flush()
+                    #~ outRef.write(refSent + "\n")
+                    #~ outRef.flush()
+            
+            
+        #~ total_gleu = 0
         #~ tgtDict = self.dicts['tgt']
         #~ srcDict = self.dicts['src']
         #~ 
@@ -161,9 +236,12 @@ class Evaluator(object):
     
     
     # Compute translation quality of a data given the model
+    # return: bleu scores (de-facto metrics)
+    # and the custom metrics (gleu, hit ... )
     def eval_translate(self, data, beam_size=1, batch_size=16, bpe=True, bpe_token="@"):
         
         model = self.model
+        model.eval()
         setIDs = self.setIDs
         
         count = 0
@@ -171,7 +249,18 @@ class Evaluator(object):
         # one score for each language pair
         bleu_scores = dict()
         
+        # return a list of scores for each language
+        total_scores = dict()
+        total_sentences = dict()
+        total_hits = dict()
+        total_hit_sentences = dict()
+        
         for sid in data: # sid = setid
+            
+            total_hits[sid] = 0
+            total_sentences[sid] = 0
+            total_scores[sid] = 0
+            total_hit_sentences[sid] = 0
             
             if self.adapt:
                 if sid != self.adapt_pair:
@@ -209,12 +298,15 @@ class Evaluator(object):
                     
                     ref_tensor = transposed_targets[b].tolist()
                     
-                    decodedSent = tgt_dict.convertToLabels(pred[b], onmt.Constants.EOS)
-                    decodedSent = " ".join(decodedSent)
+                    predWordList = tgt_dict.convertToLabels(pred[b], onmt.Constants.EOS)
+                    decodedSent = " ".join(predWordList)
                     decodedSent = decodedSent.replace(bpe_string, '')
                     
-                    refSent = tgt_dict.convertToLabels(ref_tensor, onmt.Constants.EOS)
-                    refSent = " ".join(refSent)
+                    refWordList = tgt_dict.convertToLabels(ref_tensor, onmt.Constants.EOS)
+                    refSent = " ".join(refWordList)
+                    
+                    refSent = refSent.split('. ; .')[0]
+                    
                     refSent = refSent.replace(bpe_string, '')
                     
                     
@@ -224,14 +316,54 @@ class Evaluator(object):
                     outRef.write(refSent + "\n")
                     outRef.flush()
                     
+                    s = self.score(refWordList, predWordList)
+                    
+                    if len(s) > 2:
+                        gleu = s[1]
+                        hit = s[2]
+                        
+                        if hit >= 0:
+                            total_hit_sentences[sid] += 1
+                            total_hits[sid] += hit
+                            
+                    total_scores[sid] += s[0] * 100 
+                #~ 
+                #~ if len(s) > 2:
+                    #~ gleu = s[1]
+                    #~ hit = s[2]
+                    #~ 
+                    #~ if hit >= 0:
+                        #~ total_hit_sentences += 1
+                        #~ total_hit += hit
+                #~ 
+                #~ if verbose:
+                    #~ sampledSent = " ".join(tgtWords)
+                    #~ refSent = " ".join(refWords)
+                    #~ 
+                    #~ if s[0] > 0:
+                        #~ print "SAMPLE :", sampledSent
+                        #~ print "   REF :", refSent
+                        #~ print "Score =", s
+#~ 
+                #~ # bleu is scaled by 100, probably because improvement by .01 is hard ?
+                #~ total_score += s[0] * 100 
+            
+            total_sentences[sid] += batch_size
+                    
             # compute bleu using external script
             bleu = moses_multi_bleu(outF.name, outRef.name)
             outF.close()
             outRef.close()    
             
             bleu_scores[sid] = bleu
+            
+            #~ if total_hit_sentences > 0:
+            #~ average_hit = total_hit / total_hit_sentences
+            #~ print("Average HIT : %.2f" % (average_hit * 100))
 
-        # after decoding, switch model back to training mode
-        self.model.train()
-        
-        return bleu_scores
+            #~ average_score = total_score / total_sentences
+
+            # after decoding, switch model back to training mode
+            self.model.train()
+            
+            return bleu_scores
