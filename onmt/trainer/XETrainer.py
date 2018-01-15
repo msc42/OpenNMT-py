@@ -187,15 +187,15 @@ class XETrainer(object):
                     
                 # Saving checkpoints with validation perplexity
                 if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
-                    valid_losses = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-                    valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
-                    #~ valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
+                    valid_ppl = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
+
+                    sumPpl = 0
                     for i in xrange(len(setIDs)):
                         setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
                         print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
+                        sumPpl += valid_ppl[i]
                     
-                    
-                    avgDevPpl = sum(valid_ppl) / len(valid_ppl)
+                    avgDevPpl = sumPpl / len(valid_ppl)
                     model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
                     else model.state_dict())
                     model_state_dict = {k: v for k, v in model_state_dict.items()
@@ -232,12 +232,12 @@ class XETrainer(object):
             setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
             print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[i]))
         
-        valid_losses = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-        
+            valid_ppl = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
+
         #~ for i in xrange(len(setIDs)):
-        for id in valid_losses:
+        for id in valid_ppl:
             setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
-            print('Validation perplexity for set %s : %g' % (setLangs, valid_losses[id]))
+            print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[id]))
             
         
                     
@@ -252,11 +252,14 @@ class XETrainer(object):
 
             #  (2) evaluate on the validation set
             valid_ppl = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-            avgDevPpl = sum(valid_ppl) / len(valid_ppl)
-            for id in valid_losses:
+
+            sumPpl = 0
+            for id in valid_ppl:
                 setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
-                print('Validation perplexity for set %s : %g' % (setLangs, valid_losses[id]))
-            
+                print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[id]))
+                sumPpl += valid_ppl[id]
+                
+            avgDevPpl = sumPpl / len(valid_ppl)
             # learning rate is changed manually - or automatically
 
             model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
