@@ -43,6 +43,8 @@ parser.add_argument('-override', action='store_true',
 
 parser.add_argument('-layers', type=int, default=2,
                     help='Number of layers in the LSTM encoder/decoder')
+parser.add_argument('-rnn_cell', default='lstm',
+                    help='Type of LSTM. Support lstm|mlstm')
 parser.add_argument('-rnn_size', type=int, default=500,
                     help='Size of LSTM hidden states')
 parser.add_argument('-word_vec_size', type=int, default=500,
@@ -82,6 +84,8 @@ parser.add_argument('-max_grad_norm', type=float, default=5,
                     renormalize it to have the norm equal to max_grad_norm""")
 parser.add_argument('-dropout', type=float, default=0.3,
                     help='Dropout probability; applied between LSTM stacks.')
+parser.add_argument('-label_smoothing', type=float, default=0.0,
+                    help='Applying label smoothing.')
 parser.add_argument('-curriculum', action="store_true",
                     help="""For this many epochs, order the minibatches based
                     on source sequence length. Sometimes setting this to 1 will
@@ -141,6 +145,8 @@ parser.add_argument('-share_rnn_dec', action='store_true',
                     help="""Share Rnn Decoder""")
 parser.add_argument('-share_embedding', action='store_true',
                     help="""Share embedding between same language in enc and dec""")
+parser.add_argument('-share_projection', action='store_true',
+                    help="""Share input and output projection weights of decoder""")
 parser.add_argument('-share_attention', action='store_true',
                     help="""Share attentional modules between pair""")
 opt = parser.parse_args()
@@ -173,214 +179,6 @@ def NMTCriterion(dicts):
     
     return crits
 
-
-def trainModel(model, trainSets, validSets, dataset, optim, evaluator):
-    print(model)
-    model.train()
-
-    # Define criterion of each target language.
-    criterions = NMTCriterion(dataset['dicts']['tgt'])
-    setIDs = dataset['dicts']['setIDs']
-
-    start_time = time.time()
-
-    def trainEpoch(epoch, batchOrder=None):
-
-        # Shuffle mini batch order.
-        if not batchOrder:
-            batchOrder = dict()
-            for i in trainSets:
-                batchOrder[i] = torch.randperm(len(trainSets[i]))
-
-        total_loss, total_words = dict(), dict()
-        report_loss, report_tgt_words = dict(), []
-        report_src_words = []
-        start = time.time()
-        
-        for i in trainSets:
-            total_loss[i] = 0
-            total_words[i] = 0
-            report_loss[i] = 0
-            report_tgt_words.append(0)
-            report_src_words.append(0)
-        
-        dataSizes = [len(trainSets[i]) for i in trainSets]
-        nSamples = sum(dataSizes)
-        
-        # In order to make sets sample randomly,
-        # We create a distribution over the data size
-        # In the future we can manipulate this distribution 
-        # to create biased sampling when training
-        sampleDist = torch.Tensor(len(setIDs))
-        iterators = dict()
-        for i in xrange(len(setIDs)):
-                    sampleDist[i] = len(trainSets[i])
-                    iterators[i] = -1
-        sampleDist = sampleDist / torch.sum(sampleDist)
-
-        for i in range(nSamples):
-                        
-            sampledSet = -1
-            while True:
-                # if the sampled set is full then we re-sample 
-                # to ensure that in one epoch we read each example once
-                sampledSet = int(torch.multinomial(sampleDist, 1)[0])
-                if iterators[sampledSet] + 1 < dataSizes[sampledSet]:
-                    break
-            
-            iterators[sampledSet] += 1 
-            
-            # Get the batch index from batch order
-            batchIdx = batchOrder[sampledSet][iterators[sampledSet]] if epoch > opt.curriculum else iterators[sampledSet]
-            
-            # Get the batch
-            batch = trainSets[sampledSet][batchIdx][:-1]
-            batch_size = batch[1].size(1)
-            
-            # And switch the model to the desired language mode
-            model.switchLangID(setIDs[sampledSet][0], setIDs[sampledSet][1])
-            model.switchPairID(sampledSet)
-            
-            # Do forward to the newly created graph
-            model.zero_grad()
-            outputs, hiddens = model(batch)
-            
-            # Exclude <s> from targets.
-            targets = batch[1][1:]
-            # The criterion is for the target language side
-            criterion = criterions[setIDs[sampledSet][1]]
-            
-            loss_v = criterion(outputs.view(-1, outputs.size(-1)), targets.view(-1))
-            
-            loss = loss_v.data[0]
-            
-            loss_v.div(batch_size).backward()
-            
-                        
-            # Update the parameters.
-            optim.step()
-
-            # Statistics for the current set
-            num_words = targets.data.ne(onmt.Constants.PAD).sum()
-            report_loss[sampledSet] += loss
-            report_tgt_words[sampledSet] += num_words
-            report_src_words[sampledSet] += batch[0][1].data.sum()
-            total_loss[sampledSet] += loss
-            total_words[sampledSet] += num_words
-
-            # Logging information
-            if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
-                avgTrainLoss = averagePPL(report_loss, report_tgt_words)
-                logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed; ppl: %6.2f; lr: %.6f" %
-                                (epoch, i+1, nSamples,
-                                 sum(report_src_words)/(time.time()-start),
-                                 sum(report_tgt_words)/(time.time()-start),
-                                 time.time()-start_time,
-                                 avgTrainLoss,
-                                 optim.get_learning_rate()))
-                                 
-                for j in xrange(len(setIDs)):
-                    
-                    report_loss[j] = 0
-                    report_tgt_words[j] = 0
-                    report_src_words[j] = 0
-                    
-                print(logOut)
-                start = time.time()    
-                            
-                
-            # Saving checkpoints with validation perplexity
-            if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
-                valid_losses = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-                valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
-                #~ valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
-                for i in xrange(len(setIDs)):
-                    setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
-                    print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
-                
-                
-                avgDevPpl = sum(valid_ppl) / len(valid_ppl)
-                model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
-                else model.state_dict())
-                model_state_dict = {k: v for k, v in model_state_dict.items()
-                                                        if 'generator' not in k}
-                generator_state_dict = (model.generator.module.state_dict()
-                                                                if len(opt.gpus) > 1
-                                                                else model.generator.state_dict())
-                #  drop a checkpoint
-
-                ep = float(epoch) - 1.0 + float(i + 1.0) / float(nSamples)
-
-                checkpoint = {
-                        'model': model_state_dict,
-                        'generator': generator_state_dict,
-                        'dicts': dataset['dicts'],
-                        'opt': opt,
-                        'epoch': ep,
-                        'iteration' : i,
-                        'batchOrder' : batchOrder,
-                        'optim': optim
-                }
-                
-                file_name = '%s_ppl_%.2f_e%.2f.pt'
-                #~ valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
-                print('Writing to %s_ppl_%.2f_e%.2f.pt' % (opt.save_model, avgDevPpl, ep))
-                torch.save(checkpoint,
-                                     file_name
-                                     % (opt.save_model, avgDevPpl, ep))
-        return [total_loss[j] / total_words[j] for j in xrange(len(setIDs))]
-        
-    #~ valid_losses = eval(model, criterions, validSets, setIDs)
-    valid_losses = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-    valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
-    for i in xrange(len(setIDs)):
-        setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
-        print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
-                
-    for epoch in range(opt.start_epoch, opt.start_epoch + opt.epochs):
-        print('')
-
-        #  (1) train for one epoch on the training set
-        train_losses = trainEpoch(epoch)
-        train_ppl = [math.exp(min(train_loss, 100)) for train_loss in train_losses]
-        for i in xrange(len(setIDs)):
-                    print('Training perplexity for set %d : %g' % (i, train_ppl[i]))
-
-        #  (2) evaluate on the validation set
-        valid_losses = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-        valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
-        avgDevPpl = sum(valid_ppl) / len(valid_ppl)
-        for i in xrange(len(setIDs)):
-            print('Validation perplexity for set %d : %g' % (i, valid_ppl[i])) 
-        #  (3) update the learning rate
-        #~ optim.updateLearningRate(valid_ppl, epoch)
-
-        model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
-                            else model.state_dict())
-        model_state_dict = {k: v for k, v in model_state_dict.items() if 'generator' not in k}
-                            
-        generator_state_dict = (model.generator.module.state_dict()
-                                if len(opt.gpus) > 1
-                                else model.generator.state_dict())
-        #  (4) drop a checkpoint
-        checkpoint = {
-            'model': model_state_dict,
-            'generator': generator_state_dict,
-            'dicts': dataset['dicts'],
-            'opt': opt,
-            'epoch': epoch,
-            'iteration' : -1,
-            'batchOrder' : None,
-            'optim': optim
-        }
-        
-                
-        #~ valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
-        file_name = '%s_ppl_%.2f_e%d.pt'
-        print('Writing to %s_ppl_%.2f_e%d.pt' % (opt.save_model, avgDevPpl, epoch))
-        torch.save(checkpoint,
-                                     file_name
-                                     % (opt.save_model, avgDevPpl, epoch))
 
 
 def main():
@@ -450,14 +248,12 @@ def main():
         model.cpu()
         generator.cpu()
 
-    if len(opt.gpus) > 1:
-        model = nn.DataParallel(model, device_ids=opt.gpus, dim=1)
-        generator = nn.DataParallel(generator, device_ids=opt.gpus, dim=0)
-
     model.generator = generator
     
     if opt.share_embedding:
-            model.shareEmbedding(dicts)
+        model.shareEmbedding(dicts)
+    if opt.share_projection:
+        model.shareProjection()
 
     if not opt.train_from_state_dict and not opt.train_from:
         for p in model.parameters():
@@ -472,6 +268,7 @@ def main():
         print('Loading optimizer from checkpoint:')
         optim = checkpoint['optim']
     else:
+        print('Create a new optimizer')
         optim = onmt.Optim(
             opt.optim, opt.learning_rate, opt.max_grad_norm,
             lr_decay=opt.learning_rate_decay,
@@ -529,8 +326,6 @@ def main():
         trainer = XETrainer(model, trainSets, validSets, dataset, optim, evaluator, opt)
     
     trainer.run()
-
-    #~ trainModel(model, trainSets, validSets, dataset, optim, evaluator)
 
 
 if __name__ == "__main__":

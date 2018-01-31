@@ -40,6 +40,7 @@ class Evaluator(object):
             self.adapt_src = opt.adapt_src
             self.adapt_tgt = opt.adapt_tgt
             self.adapt_pair = opt.pairID
+            print("Adapting Mode ..... !")
             
         if opt.reinforce_metrics == 'gleu':
             self.score = sentence_gleu
@@ -86,21 +87,25 @@ class Evaluator(object):
             model.switchPairID(sid)
             
             # each target language requires a criterion, right ?
-            criterion = criterions[setIDs[sid][1]]    
+            #~ criterion = criterions[setIDs[sid][1]]    
             for i in range(len(dset)):
                 # exclude original indices
                 batch = dset[i][:-1]
-                outputs, hiddens = model(batch)
+                outputs = model(batch)
                 # exclude <s> from targets
                 targets = batch[1][1:]
-                outputs_flat = outputs.view(-1, outputs.size(-1))
-                targets_flat = targets.view(-1)
-                loss = criterion(outputs_flat, targets_flat)
-                total_loss += loss.data[0]
+                
+                for dec_t, tgt_t in zip(outputs, targets.data):
+                    gen_t = model.generator.forward(dec_t)
+                    tgt_t = tgt_t.unsqueeze(1)
+                    scores = gen_t.data.gather(1, tgt_t)
+                    scores.masked_fill_(tgt_t.eq(onmt.Constants.PAD), 0)
+                    total_loss += torch.sum(scores)
+                
                 total_words += targets.data.ne(onmt.Constants.PAD).sum()
             
-            normalized_loss = total_loss / total_words
-            losses[sid] = math.exp(min(normalized_loss, 100))
+            normalized_loss = -total_loss / total_words
+            losses[sid] = math.exp(min(normalized_loss, 100))   
         
         model.train()
         return losses
@@ -256,7 +261,7 @@ class Evaluator(object):
         total_hit_sentences = dict()
         
         for sid in data: # sid = setid
-            
+           
             total_hits[sid] = 0
             total_sentences[sid] = 0
             total_scores[sid] = 0
@@ -366,4 +371,4 @@ class Evaluator(object):
             # after decoding, switch model back to training mode
             self.model.train()
             
-            return bleu_scores
+        return bleu_scores

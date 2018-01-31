@@ -10,18 +10,27 @@ import torch.nn as nn
 from torch import cuda
 from torch.autograd import Variable
 import math
-import time
+import time, datetime
 import random 
 import numpy as np
 
+from onmt.Loss import MemoryOptimizedNLLLoss
 
-def averagePPL(losses, counts):
+
+def averagePPL(losses, counts=None):
     
     ppls = []
     
-    for i in xrange(len(counts)):
-        ppl = math.exp(losses[i] / (counts[i] + 1e-6))
+    for i in losses:
+        if counts is not None:
+            ppl = math.exp(losses[i] / (counts[i] + 1e-6))
+        else:
+            ppl = losses[i]
         ppls.append(ppl)
+        #
+    #print(losses)
+    #print(ppls)
+        
     return sum(ppls) / len(ppls)
 
 
@@ -38,8 +47,10 @@ class XETrainer(object):
         self.evaluator = evaluator
         self.opt = opt
         
-        self.criterions = onmt.Models.NMTCriterion(self.dicts['tgt'], cuda=(len(self.opt.gpus) >= 1))
-        
+        self.criterions = MemoryOptimizedNLLLoss(self.dicts['tgt'], label_smoothing=self.opt.label_smoothing, 
+                                                                    shard_size=self.opt.max_generator_batches,
+                                                                    cuda=(len(self.opt.gpus) >= 1))
+        #self.criterions = onmt.Models.NMTCriterion(self.dicts['tgt'], cuda=(len(self.opt.gpus) >= 1))
         # A flag for language - specific adapting
         self.adapt = False
             
@@ -104,8 +115,8 @@ class XETrainer(object):
             sampleDist = torch.Tensor(len(setIDs))
             iterators = dict()
             for i in xrange(len(setIDs)):
-                        sampleDist[i] = len(trainSets[i])
-                        iterators[i] = -1
+                sampleDist[i] = len(trainSets[i])
+                iterators[i] = -1
             sampleDist = sampleDist / torch.sum(sampleDist)
 
             for i in range(nSamples):
@@ -140,18 +151,23 @@ class XETrainer(object):
                 
                 # Do forward to the newly created graph
                 model.zero_grad()
-                outputs, hiddens = model(batch)
+                outputs = model(batch)
                 
                 # Exclude <s> from targets.
                 targets = batch[1][1:]
                 # The criterion is for the target language side
-                criterion = criterions[setIDs[sampledSet][1]]
+                criterion_id = setIDs[sampledSet][1]
                 
-                loss_v = criterion(outputs.view(-1, outputs.size(-1)), targets.view(-1))
+                loss, gradOutputs = criterions.forward(outputs, targets, criterion_id, 
+                                               generator=model.generator, backward=True)
+                                               
+                #loss = criterions.forward(outputs, targets, criterion_id, 
+                                                        #backward=True)
+                                                        
                 
-                loss = loss_v.data[0]
                 
-                loss_v.div(batch_size).backward()
+                outputs.backward(gradOutputs)
+                
                              
                 # Update the parameters.
                 optim.step()
@@ -167,13 +183,14 @@ class XETrainer(object):
                 # Logging information
                 if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
                     avgTrainLoss = averagePPL(report_loss, report_tgt_words)
-                    logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed; ppl: %6.2f; lr: %.6f" %
+                    
+                    logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; ppl: %6.2f; lr: %.6f; %s elapsed" %
                                     (epoch, i+1, nSamples,
                                      sum(report_src_words)/(time.time()-start),
                                      sum(report_tgt_words)/(time.time()-start),
-                                     time.time()-start_time,
                                      avgTrainLoss,
-                                     optim.get_learning_rate()))
+                                     optim.get_learning_rate(),
+                                     str(datetime.timedelta(seconds=int(time.time() - start_time)))))
                                      
                     for j in xrange(len(setIDs)):
                         
@@ -187,15 +204,15 @@ class XETrainer(object):
                     
                 # Saving checkpoints with validation perplexity
                 if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
-                    valid_losses = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-                    valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
-                    #~ valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
+                    valid_ppl = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
+                    #valid_ppl = [math.exp(min(valid_loss, 100)) for valid_loss in valid_losses]
+                    #valid_ppl = " ".join([str(math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
                     for i in xrange(len(setIDs)):
                         setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
                         print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
                     
                     
-                    avgDevPpl = sum(valid_ppl) / len(valid_ppl)
+                    avgDevPpl = averagePPL(valid_ppl)
                     model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
                     else model.state_dict())
                     model_state_dict = {k: v for k, v in model_state_dict.items()
@@ -219,25 +236,23 @@ class XETrainer(object):
                     }
                     
                     file_name = '%s_ppl_%.2f_e%.2f.pt'
-                    #~ valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
+                    #valid_ppl = "_".join([("%.2f" % math.exp(min(valid_loss, 100))) for valid_loss in valid_losses])
                     print('Writing to %s_ppl_%.2f_e%.2f.pt' % (opt.save_model, avgDevPpl, ep))
                     torch.save(checkpoint,
                          file_name
                          % (opt.save_model, avgDevPpl, ep))
             return [total_loss[j] / total_words[j] for j in xrange(len(setIDs))]
             
-        #~ valid_losses = eval(model, criterions, validSets, setIDs)
+        
         bleu_scores = evaluator.eval_translate(validSets)
         for i in xrange(len(setIDs)):
             setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
             print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[i]))
         
-        valid_losses = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-        
-        #~ for i in xrange(len(setIDs)):
-        for id in valid_losses:
+        valid_ppl = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)        
+        for id in valid_ppl:
             setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
-            print('Validation perplexity for set %s : %g' % (setLangs, valid_losses[id]))
+            print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[id]))
             
         
                     
@@ -252,10 +267,15 @@ class XETrainer(object):
 
             #  (2) evaluate on the validation set
             valid_ppl = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-            avgDevPpl = sum(valid_ppl) / len(valid_ppl)
-            for id in valid_losses:
+            avgDevPpl = averagePPL(valid_ppl)
+            for id in valid_ppl:
                 setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
-                print('Validation perplexity for set %s : %g' % (setLangs, valid_losses[id]))
+                print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[id]))
+            
+            bleu_scores = evaluator.eval_translate(validSets)
+            for i in xrange(len(setIDs)):
+                setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
+                print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[i]))
             
             # learning rate is changed manually - or automatically
 

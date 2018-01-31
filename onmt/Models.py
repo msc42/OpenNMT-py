@@ -4,6 +4,7 @@ from torch.autograd import Variable
 import onmt.modules
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
+from onmt.modules.mlstm import mLSTMCell
 
 
 class Encoder(nn.Module):
@@ -49,15 +50,22 @@ class Encoder(nn.Module):
 
 
 class StackedLSTM(nn.Module):
-    def __init__(self, num_layers, input_size, rnn_size, dropout):
+    def __init__(self, num_layers, input_size, rnn_size, dropout, cell):
         super(StackedLSTM, self).__init__()
         self.dropout = nn.Dropout(dropout)
         self.num_layers = num_layers
         self.layers = nn.ModuleList()
-
-        for i in range(num_layers):
-            self.layers.append(nn.LSTMCell(input_size, rnn_size))
-            input_size = rnn_size
+        
+        if cell == 'lstm':
+            for i in range(num_layers):
+                self.layers.append(nn.LSTMCell(input_size, rnn_size))
+                input_size = rnn_size
+        elif cell == 'mlstm':
+            for i in range(num_layers):
+                self.layers.append(mLSTMCell(input_size, rnn_size))
+                input_size = rnn_size
+        else:
+            raise NotImplementedError
 
     def forward(self, input, hidden):
         h_0, c_0 = hidden
@@ -88,7 +96,7 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         self.word_lut = onmt.modules.MultiWordEmbedding(opt, dicts)
         
-        f = lambda: StackedLSTM(opt.layers, input_size, opt.rnn_size, opt.dropout)
+        f = lambda: StackedLSTM(opt.layers, input_size, opt.rnn_size, opt.dropout, opt.rnn_cell)
                                
         self.rnn = onmt.modules.MultiModule(f, len(dicts), share=opt.share_rnn_dec) 
         
@@ -271,7 +279,7 @@ class NMTModel(nn.Module):
 
     # Forward pass :
     # Two (or more) modes: Cross Entropy or Reinforce
-    def forward(self, input, mode='xe', max_length=50, gen_greedy=True, timestep_group=8):
+    def forward(self, input, mode='xe', max_length=64, gen_greedy=True):
         src = input[0]
         tgt = input[1][:-1]  # exclude last target from inputs
         enc_hidden, context = self.encoder(src)
@@ -302,24 +310,25 @@ class NMTModel(nn.Module):
                   context, init_output)
             
             # hiddens has size T * B * H
-            hiddens_split = torch.split(hiddens, timestep_group)
-            outputs = []
-            
-            # we group the computation for faster and more efficient GPU memory
-            for i, hidden_group in enumerate(hiddens_split):
-                    
-                n_steps = hidden_group.size(0)
-                hidden_group = hidden_group.view(-1, hidden_group.size(2))
-                output_group = self.generator(hidden_group)
-                output_group = output_group.view(n_steps, -1, output_group.size(1))
-                outputs.append(output_group)
-            
-            # concatenate into one single tensor
-            outputs = torch.cat(outputs, 0)
-            
-            states = hiddens            
+            #~ hiddens_split = torch.split(hiddens, 8)
+            #~ outputs = []
+            #~ 
+            #~ # we group the computation for faster and more efficient GPU memory
+            #~ for i, hidden_group in enumerate(hiddens_split):
+                    #~ 
+                #~ n_steps = hidden_group.size(0)
+                #~ hidden_group = hidden_group.view(-1, hidden_group.size(2))
+                #~ output_group = self.generator(hidden_group)
+                #~ output_group = output_group.view(n_steps, -1, output_group.size(1))
+                #~ outputs.append(output_group)
+            #~ 
+            #~ # concatenate into one single tensor
+            #~ outputs = torch.cat(outputs, 0)
+            #~ 
+            #~ states = hiddens       
+            outputs = hiddens     
          
-            return outputs, states
+            return outputs
         elif mode == 'rf':
             
             # initial token (BOS)
@@ -377,7 +386,11 @@ class NMTModel(nn.Module):
                     
         return tieList
                 
-                
+    
+    def shareProjection(self):
+        print(' * Tying decoder input and output projection')
+        for j in range(len(self.decoder.word_lut.moduleList)):
+            self.decoder.word_lut.moduleList[j].weight = self.generator.linear.moduleList[j].weight
             
 
 class Generator(nn.Module):
@@ -409,18 +422,32 @@ class Generator(nn.Module):
         self.linear.switchID(tgtID)
 
 
-def NMTCriterion(dicts, cuda=True):
+class NMTCriterion(object):
     
-    crits = dict()
-    for i in dicts:
-        vocabSize = dicts[i].size()
+    def __init__(self, dicts, cuda=True):
+        crits = dict()
+        for i in dicts:
+            vocabSize = dicts[i].size()
+            
+            weight = torch.ones(vocabSize)
+            weight[onmt.Constants.PAD] = 0
+            crit = nn.NLLLoss(weight, size_average=False)
+            if cuda:
+                crit.cuda()
+            
+            crits[i] = crit
         
-        weight = torch.ones(vocabSize)
-        weight[onmt.Constants.PAD] = 0
-        crit = nn.NLLLoss(weight, size_average=False)
-        if cuda:
-            crit.cuda()
-        
-        crits[i] = crit
+        self.crits = crits
     
-    return crits
+    
+    def forward(self, input, targets, target_id, backward=False):
+        
+        crit = self.crits[target_id]
+        
+        loss = crit(input.view(-1, input.size(-1)), targets.view(-1))
+        
+        loss_data = loss.data[0]
+        if backward:
+            loss.backward()
+            
+        return loss_data
