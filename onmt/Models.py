@@ -5,6 +5,7 @@ import onmt.modules
 from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
 from onmt.modules.mlstm import mLSTMCell
+from onmt.modules.functional import to_one_hot
 
 
 class Encoder(nn.Module):
@@ -95,6 +96,7 @@ class Decoder(nn.Module):
 
         super(Decoder, self).__init__()
         self.word_lut = onmt.modules.MultiWordEmbedding(opt, dicts)
+        self.copy_pointer = opt.copy_pointer
         
         f = lambda: StackedLSTM(opt.layers, input_size, opt.rnn_size, opt.dropout, opt.rnn_cell)
                                
@@ -120,6 +122,7 @@ class Decoder(nn.Module):
         # self.input_feed=False
         outputs = []
         output = init_output
+        all_attns = []
         for emb_t in emb.split(1):
             emb_t = emb_t.squeeze(0)
             if self.input_feed:
@@ -129,19 +132,25 @@ class Decoder(nn.Module):
             output, attn = self.attn(output, context.transpose(0, 1))
             output = self.dropout(output)
             outputs += [output]
-
+            
+            all_attns += [attn]
         outputs = torch.stack(outputs)
+        
+        # stack attn into a tensor of size len_tgt x batch_size x len_src
+        attn = torch.stack(all_attns) 
+        
         return outputs, hidden, attn
         
     
     def switchID(self, tgtID):
                 
-                self.word_lut.switchID(tgtID)
-                self.rnn.switchID(tgtID)
+        self.word_lut.switchID(tgtID)
+        self.rnn.switchID(tgtID)
                 
     def switchPairID(self, pairID):
-                self.attn.switchID(pairID)
-                return
+        
+        self.attn.switchID(pairID)
+        return
 
 
 class NMTModel(nn.Module):
@@ -150,6 +159,8 @@ class NMTModel(nn.Module):
         super(NMTModel, self).__init__()
         self.encoder = encoder
         self.decoder = decoder
+        
+        self.copy_pointer = self.decoder.copy_pointer
 
     def make_init_decoder_output(self, context):
         batch_size = context.size(1)
@@ -309,26 +320,9 @@ class NMTModel(nn.Module):
             hiddens, dec_hidden, _attn = self.decoder(tgt, enc_hidden,
                   context, init_output)
             
-            # hiddens has size T * B * H
-            #~ hiddens_split = torch.split(hiddens, 8)
-            #~ outputs = []
-            #~ 
-            #~ # we group the computation for faster and more efficient GPU memory
-            #~ for i, hidden_group in enumerate(hiddens_split):
-                    #~ 
-                #~ n_steps = hidden_group.size(0)
-                #~ hidden_group = hidden_group.view(-1, hidden_group.size(2))
-                #~ output_group = self.generator(hidden_group)
-                #~ output_group = output_group.view(n_steps, -1, output_group.size(1))
-                #~ outputs.append(output_group)
-            #~ 
-            #~ # concatenate into one single tensor
-            #~ outputs = torch.cat(outputs, 0)
-            #~ 
-            #~ states = hiddens       
             outputs = hiddens     
          
-            return outputs
+            return outputs, _attn
         elif mode == 'rf':
             
             # initial token (BOS)
@@ -387,11 +381,38 @@ class NMTModel(nn.Module):
         return tieList
                 
     
-    def shareProjection(self):
+    def shareProjection(self, generator):
         print(' * Tying decoder input and output projection')
         for j in range(len(self.decoder.word_lut.moduleList)):
-            self.decoder.word_lut.moduleList[j].weight = self.generator.linear.moduleList[j].weight
+            self.decoder.word_lut.moduleList[j].weight = generator.linear.moduleList[j].weight
             
+# This module converts indices to one-hot vectors fast
+class OneHot(nn.Module):
+    
+    def __init__(self, num_classes):
+        super(OneHot, self).__init__()
+        self.num_classes = num_classes
+        one_hot = torch.randn(1, num_classes).zero_()
+        
+        # by pre-allocating the buffer, we can massively 
+        # reduce the allocation time
+        self.register_buffer('one_hot', one_hot)
+        
+    def forward(self, input):
+        
+        data = input.data
+        original_size = data.size()
+        # reshape 
+        data = data.view(-1, 1)
+        
+        tmp_ = self.one_hot.repeat(data.size(0), 1)
+        
+        tmp_.scatter_(1, data, 1)
+        
+        tmp_ = tmp_.view(*(tuple(original_size) + (-1,)))
+                
+        return Variable(tmp_)
+        
 
 class Generator(nn.Module):
     
@@ -403,17 +424,31 @@ class Generator(nn.Module):
         self.inputSizes = [] 
         self.outputSizes = []
         
+        self.one_hots = nn.ModuleList()
+        
         for i in dicts:
             vocabSize = dicts[i].size()
             self.outputSizes.append(vocabSize)
             self.inputSizes.append(inputSize)
             
+            self.one_hots.append(OneHot(vocabSize))
+        
+        
+        
+            
         self.linear = onmt.modules.MultiLinear(self.inputSizes, self.outputSizes)
         self.lsm = nn.LogSoftmax()
                             
-    def forward(self, input):
+    def forward(self, input, batch=None):
         
         output = self.lsm(self.linear(input))
+        
+        if batch is not None:
+            
+            src = batch[0][0]
+            
+            one_hot = self.one_hots[self.linear.currentID](src)
+        
         return output
         
     

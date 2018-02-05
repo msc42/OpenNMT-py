@@ -54,6 +54,7 @@ parser.add_argument('-tgt_seq_length', type=int, default=50,
 parser.add_argument('-tgt_seq_length_trunc', type=int, default=0,
                     help="Truncate target sequence length.")
 
+
 parser.add_argument('-shuffle',    type=int, default=1,
                     help="Shuffle data")
 parser.add_argument('-seed',       type=int, default=3435,
@@ -195,8 +196,10 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts, src_seq_length=50, tgt_seq_le
     print(('Prepared %d sentences ' +
           '(%d ignored due to length == 0 or src len > %d or tgt len > %d)') %
           (len(src), ignored, src_seq_length, tgt_seq_length))
+          
+    data = (src, tgt)
 
-    return src, tgt
+    return data
 
 
 def main():
@@ -281,11 +284,14 @@ def main():
             tgtDict = dicts['vocabs'][tgtLangs[i]]
             
             print('Preparing training ... for set %d ' % i)
-            srcSet, tgtSet = makeData(srcFiles[i], tgtFiles[i], 
+            data = makeData(srcFiles[i], tgtFiles[i], 
                                       srcDict, tgtDict,
                                       src_seq_length=opt.src_seq_length,
                                       tgt_seq_length=opt.tgt_seq_length)
-                                      
+            
+            srcSet = data[0]
+            tgtSet = data[1]                    
+                                
             train['src'].append(srcSet)
             train['tgt'].append(tgtSet)
             

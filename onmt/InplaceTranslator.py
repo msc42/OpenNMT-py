@@ -92,23 +92,29 @@ class InplaceTranslator(object):
 
         batchIdx = list(range(batchSize))
         remainingSents = batchSize
+        
+        if self.model.copy_pointer:
+            src = Variable(srcBatch.data.repeat(1, beamSize)) # time x batch * beam
+        
         for i in range(self.max_sent_length):
             mask(padMask)
             # Prepare decoder input.
             input = torch.stack([b.getCurrentState() for b in beam
                                  if not b.done]).t().contiguous().view(1, -1)
-                                 #~ 
-            #~ print(context.size())
-            #~ 
-            #~ print(decOuts.size())
-                                 
+            
             # compute new decoder output (distribution)
             decOuts, decStates, attn = self.model.decoder(
                     Variable(input, volatile=True), decStates, context, decOuts)
             
             # decOut: 1 x (beam*batch) x numWords
-            decOuts = decOuts.squeeze(0)        
-            out = self.model.generator.forward(decOuts)
+            decOuts = decOuts.squeeze(0)       
+            attn_ = attn
+            attn = attn.squeeze(0)
+            
+            if self.model.copy_pointer:
+                out = self.model.generator.forward(decOuts, attn_, src)
+            else:
+                out = self.model.generator.forward(decOuts)
            
             
 
@@ -156,6 +162,15 @@ class InplaceTranslator(object):
                          updateActive(decStates[1], rnnSize))
             decOuts = updateActive(decOuts, rnnSize)
             context = updateActive(context, rnnSize)
+            
+            # src size: time x batch * beam
+            src_data = src.data.view(-1, remainingSents)
+            newSize = list(src.size())
+            newSize[-1] = newSize[-1] * len(activeIdx) // remainingSents
+            src = Variable(src_data.index_select(1, activeIdx).view(*newSize), volatile=True)
+            #~ srcBatch = Variable(srcBatch.data.repeat(1, beamSize))
+            
+            
             if useMasking:
                 padMask = padMask.index_select(1, activeIdx)
 

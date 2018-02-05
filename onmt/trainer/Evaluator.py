@@ -91,12 +91,16 @@ class Evaluator(object):
             for i in range(len(dset)):
                 # exclude original indices
                 batch = dset[i][:-1]
-                outputs = model(batch)
+                outputs, attn = model(batch)
                 # exclude <s> from targets
                 targets = batch[1][1:]
                 
-                for dec_t, tgt_t in zip(outputs, targets.data):
-                    gen_t = model.generator.forward(dec_t)
+                for dec_t, attn_t, tgt_t in zip(outputs, attn, targets.data):
+                    
+                    if model.copy_pointer:
+                        gen_t = model.generator.forward(dec_t, attn_t, batch[0][0])
+                    else:
+                        gen_t = model.generator.forward(dec_t)
                     tgt_t = tgt_t.unsqueeze(1)
                     scores = gen_t.data.gather(1, tgt_t)
                     scores.masked_fill_(tgt_t.eq(onmt.Constants.PAD), 0)

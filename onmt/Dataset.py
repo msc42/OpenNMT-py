@@ -7,8 +7,8 @@ from torch.autograd import Variable
 import onmt
 
 class Dataset(object):
-    def __init__(self, srcData, tgtData, batchSize, cuda,
-                 volatile=False, data_type="text", balance=True):
+    def __init__(self, srcData, tgtData, src_dict, tgt_dict, batchSize, cuda,
+                 volatile=False, data_type="text", balance=True, copy=False):
         self.src = srcData
         self._type = data_type
         if tgtData:
@@ -29,6 +29,10 @@ class Dataset(object):
             self.allocateBatch()
         else:
             self.numBatches = int(math.ceil(len(self.src)/batchSize))
+        
+        self.src_dict = src_dict
+        self.tgt_dict = tgt_dict
+        self.copy = False
 
     #~ # This function allocates the mini-batches (grouping sentences with the same size)
     def allocateBatch(self):
@@ -62,84 +66,111 @@ class Dataset(object):
         self.numBatches = len(self.batches)
                 
     def _batchify(self, data, align_right=False,
-                  include_lengths=False, dtype="text"):
-        if dtype == "text":
-            try:
-                lengths = [x.size(0) for x in data]
-            except:
-                print(data[1:10])
-            max_length = max(lengths)
-            out = data[0].new(len(data), max_length).fill_(onmt.Constants.PAD)
-            for i in range(len(data)):
-                data_length = data[i].size(0)
-                offset = max_length - data_length if align_right else 0
-                out[i].narrow(0, offset, data_length).copy_(data[i])
-            if include_lengths:
-                return out, lengths 
-            else:
-                return out
-        elif dtype == "img":
-            heights = [x.size(1) for x in data]
-            max_height = max(heights)
-            widths = [x.size(2) for x in data]
-            max_width = max(widths)
-
-            out = data[0].new(len(data), 3, max_height, max_width).fill_(0)
-            for i in range(len(data)):
-                data_height = data[i].size(1)
-                data_width = data[i].size(2)
-                height_offset = max_height - data_height if align_right else 0
-                width_offset = max_width - data_width if align_right else 0
-                out[i].narrow(1, height_offset, data_height) \
-                      .narrow(2, width_offset, data_width).copy_(data[i])
-            return out, widths            
+                  include_lengths=False, 
+                  include_copy_map=False,
+                  dtype="text"):
+        try:
+            lengths = [x.size(0) for x in data]
+        except:
+            print(data[1:10])
+        # we need length for rnn API
+        max_length = max(lengths)
+        out = data[0].new(len(data), max_length).fill_(onmt.Constants.PAD)
+        
+        
+            
+            
+        for i in range(len(data)):
+            data_length = data[i].size(0)
+            offset = max_length - data_length if align_right else 0
+            out[i].narrow(0, offset, data_length).copy_(data[i])
+            
+            
+        
+        result = [out]
+        
+        if include_lengths:
+            
+            result.append(lengths)
+        
+        #~ if include_copy_map:
+            #~ 
+            #~ result.append(copy_map)
+            #~ 
+        return result
+          
                 
                 
     def __getitem__(self, index):
         assert index < self.numBatches, "%d > %d" % (index, self.numBatches)
         
         if self.balance:
-                    batch = self.batches[index]
-                    srcData = [self.src[i] for i in batch]
-                    srcBatch, lengths = self._batchify(
-                            srcData,
-                            align_right=False, include_lengths=True, dtype=self._type)
-            
-                    if self.tgt:
-                        tgtData = [self.tgt[i] for i in batch]
-                        tgtBatch = self._batchify(
-                                    tgtData,
-                                    dtype="text")
-                    else:
-                            tgtBatch = None
+            batch = self.batches[index]
+            srcData = [self.src[i] for i in batch]
+            srcData = self._batchify(
+                srcData,
+                align_right=False, include_lengths=True, 
+                include_copy_map=self.copy, dtype=self._type)
+    
+            if self.tgt:
+                tgtData = [self.tgt[i] for i in batch]
+                tgtData = self._batchify(
+                            tgtData,
+                            dtype="text")
+            else:
+                tgtData = None
         else:
-                    srcBatch, lengths = self._batchify(
-            self.src[index*self.batchSize:(index+1)*self.batchSize],
-            align_right=False, include_lengths=True, dtype=self._type)
+            srcData = self._batchify(
+                self.src[index*self.batchSize:(index+1)*self.batchSize],
+                align_right=False, include_lengths=True, dtype=self._type)
 
-                    if self.tgt:
-                            tgtBatch = self._batchify(
-                                    self.tgt[index*self.batchSize:(index+1)*self.batchSize],
-                                    dtype="text")
-                    else:
-                            tgtBatch = None  
+            if self.tgt:
+                tgtData = self._batchify(
+                        self.tgt[index*self.batchSize:(index+1)*self.batchSize],
+                        dtype="text")
+            else:
+                tgtData = None  
+        
+        # gather the result
+        srcBatch = srcData[0]
+        srcLengths = srcData[1]
+        #~ if self.copy:
+            #~ srcMap = srcData[2]
+        
+        tgtBatch = tgtData[0]
 
         # within batch sorting by decreasing length for variable length rnns
         indices = range(len(srcBatch))
-        batch = (zip(indices, srcBatch) if tgtBatch is None
-                 else zip(indices, srcBatch, tgtBatch))
+        
+        batch_tuple = (indices, srcBatch)
+        
+        if tgtBatch is not None:
+            batch_tuple = (indices, srcBatch, tgtBatch)
+        
+        #~ if self.copy:
+            #~ batch_tuple += (srcMap, )
+        
+        
+        batch = zip(*batch_tuple)
+        lengths = srcLengths
         batch, lengths = zip(*sorted(zip(batch, lengths), key=lambda x: -x[1]))
         if tgtBatch is None:
-            indices, srcBatch = zip(*batch)
+            if self.copy:
+                indices, srcBatch, srcMap = zip(*batch)
+            else:
+                indices, srcBatch = zip(*batch)
         else:
-            indices, srcBatch, tgtBatch = zip(*batch)
+            if self.copy:
+                indices, srcBatch, tgtBatch, srcMap = zip(*batch)
+            else:
+                indices, srcBatch, tgtBatch = zip(*batch)
 
         def wrap(b, dtype="text"):
             if b is None:
                 return b
             b = torch.stack(b, 0)
             if dtype == "text":
-                b = b.t().contiguous()
+                b = b.transpose(0, 1).contiguous()
             if self.cuda:
                 b = b.cuda()
             b = Variable(b, volatile=self.volatile)
@@ -152,9 +183,17 @@ class Dataset(object):
         srcTensor = wrap(srcBatch, self._type)
         tgtTensor = wrap(tgtBatch, "text")
         
+        #~ if self.copy:
+            #~ srcMapTensor = wrap(srcMap)
         
-        return (srcTensor, lengths), \
-            tgtTensor, indices
+        result = ((srcTensor, lengths), tgtTensor)
+        
+        #~ if self.copy:
+            #~ result += (srcMapTensor, )
+        
+        result += (indices, )
+        
+        return result
 
     def __len__(self):
         return self.numBatches

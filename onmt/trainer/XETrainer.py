@@ -15,6 +15,7 @@ import random
 import numpy as np
 
 from onmt.Loss import MemoryOptimizedNLLLoss
+from onmt.modules import MemoryOptimizedCopyLoss
 
 
 def averagePPL(losses, counts=None):
@@ -44,9 +45,14 @@ class XETrainer(object):
         self.evaluator = evaluator
         self.opt = opt
         
-        self.criterions = MemoryOptimizedNLLLoss(self.dicts['tgt'], label_smoothing=self.opt.label_smoothing, 
-                                                                    shard_size=self.opt.max_generator_batches,
-                                                                    cuda=(len(self.opt.gpus) >= 1))
+        if opt.copy_pointer:
+            self.criterions = MemoryOptimizedCopyLoss(self.dicts['tgt'], label_smoothing=self.opt.label_smoothing, 
+                                                                        shard_size=self.opt.max_generator_batches,
+                                                                        cuda=(len(self.opt.gpus) >= 1))
+        else:
+            self.criterions = MemoryOptimizedNLLLoss(self.dicts['tgt'], label_smoothing=self.opt.label_smoothing, 
+                                                                        shard_size=self.opt.max_generator_batches,
+                                                                        cuda=(len(self.opt.gpus) >= 1))
         #self.criterions = onmt.Models.NMTCriterion(self.dicts['tgt'], cuda=(len(self.opt.gpus) >= 1))
         # A flag for language - specific adapting
         self.adapt = False
@@ -148,22 +154,15 @@ class XETrainer(object):
                 
                 # Do forward to the newly created graph
                 model.zero_grad()
-                outputs = model(batch)
+                outputs, attn = model(batch)
                 
                 # Exclude <s> from targets.
                 targets = batch[1][1:]
                 # The criterion is for the target language side
                 criterion_id = setIDs[sampledSet][1]
                 
-                loss, gradOutputs = criterions.forward(outputs, targets, criterion_id, 
+                loss = criterions.forward(batch, (outputs, attn), targets, criterion_id, 
                                                generator=model.generator, backward=True)
-                                               
-                #loss = criterions.forward(outputs, targets, criterion_id, 
-                                                        #backward=True)
-                                                        
-                
-                
-                outputs.backward(gradOutputs)
                 
                              
                 # Update the parameters.
@@ -224,6 +223,7 @@ class XETrainer(object):
                     generator_state_dict = (model.generator.module.state_dict()
                                                                     if len(opt.gpus) > 1
                                                                     else model.generator.state_dict())
+                    optim_state_dict = optim.state_dict()
                     #  drop a checkpoint
 
                     ep = float(epoch) - 1.0 + float(i + 1.0) / float(nSamples)
@@ -236,7 +236,7 @@ class XETrainer(object):
                             'epoch': ep,
                             'iteration' : i,
                             'batchOrder' : batchOrder,
-                            'optim': optim
+                            'optim': optim_state_dict
                     }
                     
                     file_name = '%s_ppl_%.2f_e%.2f.pt'
@@ -290,6 +290,7 @@ class XETrainer(object):
             generator_state_dict = (model.generator.module.state_dict()
                                     if len(opt.gpus) > 1
                                     else model.generator.state_dict())
+            optim_state_dict = optim.state_dict()
             #  (3) drop a checkpoint
             checkpoint = {
                 'model': model_state_dict,
@@ -299,7 +300,7 @@ class XETrainer(object):
                 'epoch': epoch,
                 'iteration' : -1,
                 'batchOrder' : None,
-                'optim': optim
+                'optim': optim_state_dict
             }
             
                     

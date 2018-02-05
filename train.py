@@ -15,6 +15,7 @@ import math
 import time
 
 from onmt.trainer.Evaluator import Evaluator
+from onmt.ModelConstructor import build_model
 
 parser = argparse.ArgumentParser(description='train.py')
 onmt.Markdown.add_md_help_argument(parser)
@@ -116,6 +117,8 @@ parser.add_argument('-start_decay_at', type=int, default=8,
                     epoch""")
 parser.add_argument('-reset_optim', action='store_true',
                     help="""reset the optimization""")
+parser.add_argument('-copy_pointer', action='store_true',
+                    help="""Pointer network for copying from source""")
 # pretrained word vectors
 
 parser.add_argument('-pre_word_vecs_enc',
@@ -187,8 +190,8 @@ def main():
     dataset = torch.load(opt.data)
     print("Done")
     
-    dict_checkpoint = (opt.train_from if opt.train_from
-                       else opt.train_from_state_dict)
+    dict_checkpoint = opt.train_from_state_dict
+    
     if dict_checkpoint:
         print('Loading dicts from checkpoint at %s' % dict_checkpoint)
         checkpoint = torch.load(dict_checkpoint)
@@ -196,20 +199,24 @@ def main():
     
     dicts = dataset['dicts']
     nSets = dicts['nSets']
+    setIDs = dicts['setIDs']
     print(' * Vocabulary sizes: ')
     for lang in dicts['langs']:
-            print(' * ' + lang + ' = %d' % dicts['vocabs'][lang].size())
+        print(' * ' + lang + ' = %d' % dicts['vocabs'][lang].size())
 
     trainSets = dict()
     validSets = dict()
     for i in xrange(nSets):
-      trainSets[i] = onmt.Dataset(dataset['train']['src'][i],
-                             dataset['train']['tgt'][i], opt.batch_size, opt.gpus)
+        
+        src_dict = dicts['src'][setIDs[i][0]]
+        tgt_dict = dicts['tgt'][setIDs[i][1]]
+        trainSets[i] = onmt.Dataset(dataset['train']['src'][i], dataset['train']['tgt'][i],
+                             src_dict, tgt_dict, opt.batch_size, opt.gpus, copy=opt.copy_pointer)
             
-      validSets[i] = onmt.Dataset(dataset['valid']['src'][i],
-                             dataset['valid']['tgt'][i], opt.batch_size, opt.gpus)
-      
-      print(' * number of training sentences for set %d: %d' %
+        validSets[i] = onmt.Dataset(dataset['valid']['src'][i], dataset['valid']['tgt'][i],
+                             src_dict, tgt_dict, opt.batch_size, opt.gpus, copy=opt.copy_pointer)
+
+        print(' * number of training sentences for set %d: %d' %
           (i, len(dataset['train']['src'][i])))
         
 
@@ -217,72 +224,47 @@ def main():
 
     print('Building model...')
     
+    model, generator = build_model(opt, dicts, nSets)
+
     
-    encoder = onmt.Models.Encoder(opt, dicts['src'])
-    decoder = onmt.Models.Decoder(opt, dicts['tgt'], nSets)
-    generator = onmt.Models.Generator(opt, dicts['tgt'])
-
-    model = onmt.Models.NMTModel(encoder, decoder)
-
-    if opt.train_from:
-        print('Loading model from checkpoint at %s' % opt.train_from)
-        chk_model = checkpoint['model']
-        generator_state_dict = chk_model.generator.state_dict()
-        model_state_dict = {k: v for k, v in chk_model.state_dict().items()
-                            if 'generator' not in k}
-        model.load_state_dict(model_state_dict)
-        generator.load_state_dict(generator_state_dict)
-        opt.start_epoch = checkpoint['epoch'] + 1
-
+    
+    if opt.share_embedding:
+        model.shareEmbedding(dicts)
+    if opt.share_projection:
+        model.shareProjection(generator)
+    
     if opt.train_from_state_dict:
         print('Loading model from checkpoint at %s'
               % opt.train_from_state_dict)
         model.load_state_dict(checkpoint['model'])
         generator.load_state_dict(checkpoint['generator'])
         opt.start_epoch = int(math.floor(checkpoint['epoch'] + 1))
-
+        
     if len(opt.gpus) >= 1:
         model.cuda()
         generator.cuda()
     else:
         model.cpu()
         generator.cpu()
-
-    model.generator = generator
     
-    if opt.share_embedding:
-        model.shareEmbedding(dicts)
-    if opt.share_projection:
-        model.shareProjection()
+    model.generator = generator
+      
 
-    if not opt.train_from_state_dict and not opt.train_from:
+    if not opt.train_from_state_dict :
         for p in model.parameters():
             p.data.uniform_(-opt.param_init, opt.param_init)
 
-        optim = onmt.Optim(
+    optim = onmt.Optim(
             opt.optim, opt.learning_rate, opt.max_grad_norm,
             lr_decay=opt.learning_rate_decay,
             start_decay_at=opt.start_decay_at
-        )
-    elif not opt.reset_optim and 'optim' in checkpoint:
-        print('Loading optimizer from checkpoint:')
-        optim = checkpoint['optim']
-    else:
-        print('Create a new optimizer')
-        optim = onmt.Optim(
-            opt.optim, opt.learning_rate, opt.max_grad_norm,
-            lr_decay=opt.learning_rate_decay,
-            start_decay_at=opt.start_decay_at
-        )
-
+    )
+    
     optim.set_parameters(model.parameters())
-    optim.set_learning_rate(opt.learning_rate)
-    
-    
 
-    #~ if opt.train_from or opt.train_from_state_dict:
-        #~ optim.optimizer.load_state_dict(
-            #~ checkpoint['optim'].optimizer.state_dict())
+    if opt.train_from_state_dict and opt.reset_optim:
+        optim.load_state_dict(checkpoint['optim'])
+
     
     if opt.train_from or opt.train_from_state_dict:
         del checkpoint # to save memory

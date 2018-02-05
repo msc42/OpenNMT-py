@@ -60,4 +60,11 @@ class Optim(object):
                 
         self.lr = lr
         self.optimizer.param_groups[0]['lr'] = lr
-                
+    
+    def state_dict(self):
+        
+        return self.optimizer.state_dict()
+    
+    def load_state_dict(self, state_dict):
+    
+        self.optimizer.load_state_dict(state_dict)

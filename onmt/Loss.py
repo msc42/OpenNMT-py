@@ -144,9 +144,6 @@ class MemoryOptimizedNLLLoss(object):
                 
             self.criterions[i] = crit
             
-        
-        
-    
     def cuda(self):
         
         for i in self.criterions:
@@ -159,8 +156,12 @@ class MemoryOptimizedNLLLoss(object):
         
         return (loss, nll)
         
+    def __call__(self, *args,**kwargs):
+        
+        return self.forward(*args, **kwargs)
+        
    
-    def forward(self, outputs, targets, setID, generator=None, backward=False):
+    def forward(self, batch, outputs, targets, setID, generator=None, backward=False):
         """
         Compute the loss. Subclass must define this method.
         Args:
@@ -173,6 +174,7 @@ class MemoryOptimizedNLLLoss(object):
         """
         batch_size = outputs.size(1)
         n_words = targets.data.ne(onmt.Constants.PAD).sum()
+        outputs_ = outputs
         
         outputs = torch.autograd.Variable(outputs.data, requires_grad=(backward))
                 
@@ -184,7 +186,7 @@ class MemoryOptimizedNLLLoss(object):
             
             # compute the distribution 
             if generator is not None:
-                dist_t = generator(outputs_t.view(-1, outputs_t.size(-1)))
+                dist_t = generator(outputs_t.view(-1, outputs_t.size(-1)), batch)
             else:
                 dist_t = outputs_t.view(-1, outputs_t.size(-1))
            
@@ -204,4 +206,9 @@ class MemoryOptimizedNLLLoss(object):
             
         grad_outputs = None if outputs.grad is None else outputs.grad.data
         
-        return loss_data, grad_outputs
+        if backward:
+            variables = [outputs_]
+            grads = [grad_outputs]
+            torch.autograd.backward(variables, grads)
+        
+        return loss_data
