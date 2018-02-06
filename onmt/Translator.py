@@ -3,6 +3,8 @@ import onmt.modules
 import torch.nn as nn
 import torch
 from torch.autograd import Variable
+from onmt.ModelConstructor import build_model
+
 
 # Ensemble decoding
 
@@ -59,12 +61,15 @@ class Translator(object):
             
             
             # Build the model
-            encoder = onmt.Models.Encoder(model_opt, self.dicts['src'])
-            decoder = onmt.Models.Decoder(model_opt, self.dicts['tgt'], nSets)
-            this_model = onmt.Models.NMTModel(encoder, decoder)
-
-            generator = onmt.Models.Generator(model_opt, self.dicts['tgt'])
-
+            
+            this_model, generator = build_model(model_opt, self.dicts, nSets)
+            
+            #~ encoder = onmt.Models.Encoder(model_opt, self.dicts['src'])
+            #~ decoder = onmt.Models.Decoder(model_opt, self.dicts['tgt'], nSets)
+            #~ this_model = onmt.Models.NMTModel(encoder, decoder)
+#~ 
+            #~ generator = onmt.Models.Generator(model_opt, self.dicts['tgt'])
+#~ 
             this_model.load_state_dict(checkpoint['model'])
             generator.load_state_dict(checkpoint['generator'])
 
@@ -77,8 +82,6 @@ class Translator(object):
 
             this_model.generator = generator
 
-            #~ self.model = model
-            #~ self.model.eval()
             this_model.eval()
             
             # Need to find the src and tgt id
@@ -250,10 +253,19 @@ class Translator(object):
             decOut = this_model.make_init_decoder_output(context)
             mask(padMask)
             initOutput = this_model.make_init_decoder_output(context)
+            
+            
             decOut, decStates, attn = this_model.decoder(
                 tgtBatch[:-1], decStates, context, initOutput)
-            for dec_t, tgt_t in zip(decOut, tgtBatch[1:].data):
-                gen_t = this_model.generator.forward(dec_t)
+            
+            for dec_t, attn_t, tgt_t in zip(decOut, attn, tgtBatch[1:].data):
+                #~ gen_t = this_model.generator.forward(dec_t)
+                
+                if this_model.copy_pointer:
+                    gen_t = this_model.generator.forward(dec_t, attn_t, srcBatch)
+                else:
+                    gen_t = this_model.generator.forward(dec_t)
+                
                 tgt_t = tgt_t.unsqueeze(1)
                 scores = gen_t.data.gather(1, tgt_t)
                 scores.masked_fill_(tgt_t.eq(onmt.Constants.PAD), 0)
@@ -282,6 +294,8 @@ class Translator(object):
         outs = dict()
         for i in xrange(self.n_models):
             decOuts[i] = self.models[i].make_init_decoder_output(contexts[i])
+            
+        src = Variable(srcBatch.data.repeat(1, beamSize)) # time x batch * beam
 
         if useMasking:
             padMask = srcBatch.data.eq(
@@ -303,7 +317,11 @@ class Translator(object):
                     Variable(input, volatile=True), decStates[i], contexts[i], decOuts[i])
                 # decOut: 1 x (beam*batch) x numWords
                 decOuts[i] = decOuts[i].squeeze(0)
-                outs[i] = self.models[i].generator.forward(decOuts[i])
+                
+                if self.models[i].copy_pointer:
+                    outs[i] = self.models[i].generator.forward(decOuts[i], attns[i], src)
+                else:
+                    outs[i] = self.models[i].generator.forward(decOuts[i])
             
             # combine outputs and attention
             
@@ -358,6 +376,13 @@ class Translator(object):
                              updateActive(decStates[i][1], rnnSizes[i]))
                 decOuts[i] = updateActive(decOuts[i], rnnSizes[i])
                 contexts[i] = updateActive(contexts[i], rnnSizes[i])
+                
+             # src size: time x batch * beam
+            src_data = src.data.view(-1, remainingSents)
+            newSize = list(src.size())
+            newSize[-1] = newSize[-1] * len(activeIdx) // remainingSents
+            src = Variable(src_data.index_select(1, activeIdx).view(*newSize), volatile=True)    
+                
             if useMasking:
                 padMask = padMask.index_select(1, activeIdx)
 

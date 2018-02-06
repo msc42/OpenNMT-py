@@ -33,7 +33,7 @@ class OneHot(nn.Module):
         
         tmp_ = tmp_.view(*(tuple(original_size) + (-1,)))
                 
-        return Variable(tmp_)
+        return Variable(tmp_, requires_grad=False)
 
 class CopyGenerator(nn.Module):
     """Generator module that additionally considers copying
@@ -104,7 +104,7 @@ class CopyGenerator(nn.Module):
         self.linear.switchID(tgtID)
         self.linear_copy.switchID(tgtID)
     
-    def forward(self, input, attn, src):
+    def forward(self, input, attn, src, return_log=True):
         
         # CHECKS
         #~ batch_by_tlen, _ = input.size()
@@ -145,7 +145,11 @@ class CopyGenerator(nn.Module):
         output = p_g + p_c
         
         # log probabilities
-        output = torch.log(output + 1e-20)
+        
+        if return_log:
+            output = torch.log(output)  
+            
+        src_map.detach()
         
         return output
         

@@ -7,7 +7,7 @@ from torch.autograd import Variable
 import onmt
 
 class Dataset(object):
-    def __init__(self, srcData, tgtData, src_dict, tgt_dict, batchSize, cuda,
+    def __init__(self, srcData, tgtData, batchSize, cuda,
                  volatile=False, data_type="text", balance=True, copy=False):
         self.src = srcData
         self._type = data_type
@@ -30,8 +30,8 @@ class Dataset(object):
         else:
             self.numBatches = int(math.ceil(len(self.src)/batchSize))
         
-        self.src_dict = src_dict
-        self.tgt_dict = tgt_dict
+        #~ self.src_dict = src_dict
+        #~ self.tgt_dict = tgt_dict
         self.copy = False
 
     #~ # This function allocates the mini-batches (grouping sentences with the same size)

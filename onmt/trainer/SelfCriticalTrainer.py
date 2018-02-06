@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch import cuda
 from torch.autograd import Variable
 import math
-import time
+import time, datetime
 import random 
 import numpy as np
 from onmt.metrics.gleu import sentence_gleu
@@ -212,7 +212,7 @@ class SCSTTrainer(object):
                 expanded_reward = rf_rewards.unsqueeze(0).expand_as(seq_mask)
                 reward_variable = Variable(expanded_reward, requires_grad=False)
                 
-                # REINFORCE loss (Sutton et al. 1992)
+                # REINFORCE loss (Sutton et al. 1992) log P(Y) * R(Y)
                 action_loss = -(logprobs * reward_variable * weight_variable).sum()
                 
                 # normalize the loss by batch size
@@ -236,18 +236,16 @@ class SCSTTrainer(object):
 
                 # Logging information
                 if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
-                    #~ avgTrainLoss = averageReward(report_rewards, report_tgt_words)
                     avgTrainLoss = sum(report_rewards.values()) / sum(report_tgt_sents.values())
-                    logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed; avg reward: %6.2f; lr: %.6f" %
+                    logOut = ("Epoch %2d, %5d/%5d; ; %3.0f src tok/s; %3.0f tgt tok/s; avg reward: %6.2f; lr: %.6f; %s elapsed" %
                                     (epoch, i+1, nSamples,
                                      sum(report_src_words)/(time.time()-start),
                                      sum(report_tgt_words)/(time.time()-start),
-                                     time.time()-start_time,
                                      avgTrainLoss,
-                                     optim.get_learning_rate()))
+                                     optim.get_learning_rate(),
+                                     str(datetime.timedelta(seconds=int(time.time() - start_time)))))
                                      
                     for j in xrange(len(setIDs)):
-                        
                         report_rewards[j] = 0
                         report_tgt_words[j] = 0
                         report_src_words[j] = 0
@@ -287,9 +285,7 @@ class SCSTTrainer(object):
                             'batchOrder' : batchOrder,
                             'optim': optim
                     }
-                    
-                    
-                    
+
                     if self.override:
                         if self.best_bleu <= avg_dev_bleu:
                             self.best_bleu = avg_dev_bleu
@@ -306,10 +302,12 @@ class SCSTTrainer(object):
             #~ return [total_rewards[j] / total_sents[j] for j in xrange(len(setIDs))]
             
         bleu_scores = evaluator.eval_translate(validSets)
-        #~ for id in xrange(len(setIDs)):
         for id in bleu_scores:
             setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
             print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[id]))
+        
+            
+            
         avg_bleu = sum(bleu_scores.values()) / len(bleu_scores)
         print("Average dev BLEU scores: %g" % avg_bleu)
         
@@ -324,7 +322,7 @@ class SCSTTrainer(object):
             #  (2) evaluate BLEU on the validation set
             valid_bleu_scores = evaluator.eval_translate(validSets)
             avg_dev_bleu = sum(valid_bleu_scores.values()) / len(valid_bleu_scores)
-            #~ for i in xrange(len(setIDs)):
+
             for id in valid_bleu_scores:
                 setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
                 print('Validation BLEU Scores for set %s : %g' % (setLangs, valid_bleu_scores[id]))

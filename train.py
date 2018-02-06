@@ -1,5 +1,8 @@
 from __future__ import division
 
+import warnings
+warnings.filterwarnings('ignore')
+
 import onmt
 import onmt.Markdown
 import onmt.modules
@@ -211,10 +214,10 @@ def main():
         src_dict = dicts['src'][setIDs[i][0]]
         tgt_dict = dicts['tgt'][setIDs[i][1]]
         trainSets[i] = onmt.Dataset(dataset['train']['src'][i], dataset['train']['tgt'][i],
-                             src_dict, tgt_dict, opt.batch_size, opt.gpus, copy=opt.copy_pointer)
+                             opt.batch_size, opt.gpus, copy=opt.copy_pointer)
             
         validSets[i] = onmt.Dataset(dataset['valid']['src'][i], dataset['valid']['tgt'][i],
-                             src_dict, tgt_dict, opt.batch_size, opt.gpus, copy=opt.copy_pointer)
+                             opt.batch_size, opt.gpus, copy=opt.copy_pointer)
 
         print(' * number of training sentences for set %d: %d' %
           (i, len(dataset['train']['src'][i])))
@@ -228,10 +231,10 @@ def main():
 
     
     
-    if opt.share_embedding:
-        model.shareEmbedding(dicts)
-    if opt.share_projection:
-        model.shareProjection(generator)
+    #~ if opt.share_embedding:
+        #~ model.shareEmbedding(dicts)
+    #~ if opt.share_projection:
+        #~ model.shareProjection(generator)
     
     if opt.train_from_state_dict:
         print('Loading model from checkpoint at %s'
@@ -262,11 +265,12 @@ def main():
     
     optim.set_parameters(model.parameters())
 
-    if opt.train_from_state_dict and opt.reset_optim:
+    if opt.train_from_state_dict and opt.reset_optim == False:
+        print("Loading optimizer state from checkpoint")
         optim.load_state_dict(checkpoint['optim'])
 
     
-    if opt.train_from or opt.train_from_state_dict:
+    if opt.train_from_state_dict:
         del checkpoint # to save memory
 
     nParams = sum([p.nelement() for p in model.parameters()])

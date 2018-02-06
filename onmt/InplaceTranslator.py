@@ -93,8 +93,8 @@ class InplaceTranslator(object):
         batchIdx = list(range(batchSize))
         remainingSents = batchSize
         
-        if self.model.copy_pointer:
-            src = Variable(srcBatch.data.repeat(1, beamSize)) # time x batch * beam
+        #~ if self.model.copy_pointer:
+        src = Variable(srcBatch.data.repeat(1, beamSize)) # time x batch * beam
         
         for i in range(self.max_sent_length):
             mask(padMask)

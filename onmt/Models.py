@@ -6,6 +6,8 @@ from torch.nn.utils.rnn import pad_packed_sequence as unpack
 from torch.nn.utils.rnn import pack_padded_sequence as pack
 from onmt.modules.mlstm import mLSTMCell
 from onmt.modules.functional import to_one_hot
+import torch.nn.functional as F
+
 
 
 class Encoder(nn.Module):
@@ -192,8 +194,8 @@ class NMTModel(nn.Module):
     # We need the context, the initial hidden layer, the initial state (for input feed) and an initial input
     # Options are: using argmax or stochastic, and to save the stochastic actions for reinforcement learning
     def sample_from_context(self, context, init_state, init_hiddens, init_input, 
-                                max_length=50, save=False, argmax=True):
-                        
+                                max_length=50, save=False, argmax=True, src=None):
+        
         hidden = init_hiddens
         state = init_state
         batch_size = context.size(1) 
@@ -232,14 +234,20 @@ class NMTModel(nn.Module):
             state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
             
             state = state.squeeze(0)
-            output = self.generator(state) 
+            
+            if self.copy_pointer:
+                output = self.generator(state, attn_t, src, return_log=False)
+            else:
+                output = self.generator(state, return_log=False)
+             
             if argmax:
                 sample_ = torch.topk(output, 1, dim=1)[1]
                 sample = sample_.data
                 
                 
             else: # Stochastic sampling
-                dist = output.exp()
+                dist = output
+                #~ dist = output.exp()
                 
                 sample_ = dist.multinomial(1)
                 
@@ -248,7 +256,10 @@ class NMTModel(nn.Module):
    
             # log_prob of action at time T
             
-            log_prob_t = output.gather(1, Variable(sample)).t() # 1 * batch_size
+            prob_t = output.gather(1, Variable(sample)).t() # 1 * batch_size
+            
+            log_prob_t = torch.log(prob_t)
+            #~ log_prob_t = prob_t
                         
             log_probs.append(log_prob_t) 
             
@@ -268,7 +279,7 @@ class NMTModel(nn.Module):
             # note: one of the important steps here
             # is to generate the data (tensor) 
             # before making the actual variable
-            input_t = Variable(sample.t(), volatile=(not save))
+            input_t = Variable(sample.t(), volatile=(not save), requires_grad=False)
            
             sampled.append(input_t)
 
@@ -284,7 +295,6 @@ class NMTModel(nn.Module):
         sampled = torch.cat(sampled, 0) # T x B
         
         log_probs = torch.cat(log_probs, 0) # T x B
-        
         
         return sampled, log_probs
 
@@ -330,12 +340,13 @@ class NMTModel(nn.Module):
             
             # save=True so that the stochastic actions will be saved for the backward pass
             rl_samples, logprobs = self.sample_from_context(context, init_output, enc_hidden, 
-                                            init_input, argmax=False, max_length=min(length + 5, 51), save=True)
+                                            init_input, argmax=False, max_length=min(length + 5, 51), save=True, src=src[0])
             # By default: the baseline is the samples from greedy search
             
             if gen_greedy:
+                
                 greedy_samples,  _ = self.sample_from_context(context, init_output, enc_hidden, 
-                                                    init_input, argmax=True, max_length=min(length + 5, 51))                                                                                                                                                                 
+                                                    init_input, argmax=True, max_length=min(length + 5, 51), src=src[0])                                                                                                                                                                 
                 return rl_samples, greedy_samples, logprobs
             else:
                 return rl_samples, logprobs
@@ -385,33 +396,6 @@ class NMTModel(nn.Module):
         print(' * Tying decoder input and output projection')
         for j in range(len(self.decoder.word_lut.moduleList)):
             self.decoder.word_lut.moduleList[j].weight = generator.linear.moduleList[j].weight
-            
-# This module converts indices to one-hot vectors fast
-class OneHot(nn.Module):
-    
-    def __init__(self, num_classes):
-        super(OneHot, self).__init__()
-        self.num_classes = num_classes
-        one_hot = torch.randn(1, num_classes).zero_()
-        
-        # by pre-allocating the buffer, we can massively 
-        # reduce the allocation time
-        self.register_buffer('one_hot', one_hot)
-        
-    def forward(self, input):
-        
-        data = input.data
-        original_size = data.size()
-        # reshape 
-        data = data.view(-1, 1)
-        
-        tmp_ = self.one_hot.repeat(data.size(0), 1)
-        
-        tmp_.scatter_(1, data, 1)
-        
-        tmp_ = tmp_.view(*(tuple(original_size) + (-1,)))
-                
-        return Variable(tmp_)
         
 
 class Generator(nn.Module):
@@ -424,30 +408,29 @@ class Generator(nn.Module):
         self.inputSizes = [] 
         self.outputSizes = []
         
-        self.one_hots = nn.ModuleList()
+        
         
         for i in dicts:
             vocabSize = dicts[i].size()
             self.outputSizes.append(vocabSize)
             self.inputSizes.append(inputSize)
-            
-            self.one_hots.append(OneHot(vocabSize))
-        
         
         
             
         self.linear = onmt.modules.MultiLinear(self.inputSizes, self.outputSizes)
         self.lsm = nn.LogSoftmax()
                             
-    def forward(self, input, batch=None):
+    def forward(self, input, softmax=True, return_log=True):
         
-        output = self.lsm(self.linear(input))
+        #~ output = self.lsm(self.linear(input))
+        output = self.linear(input)
         
-        if batch is not None:
-            
-            src = batch[0][0]
-            
-            one_hot = self.one_hots[self.linear.currentID](src)
+        # normalize for distribution
+        if softmax:
+            if return_log:
+                output = F.log_softmax(output)
+            else:
+                output = F.softmax(output)
         
         return output
         
