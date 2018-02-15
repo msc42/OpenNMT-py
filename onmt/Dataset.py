@@ -77,26 +77,16 @@ class Dataset(object):
         max_length = max(lengths)
         out = data[0].new(len(data), max_length).fill_(onmt.Constants.PAD)
         
-        
-            
-            
         for i in range(len(data)):
             data_length = data[i].size(0)
             offset = max_length - data_length if align_right else 0
             out[i].narrow(0, offset, data_length).copy_(data[i])
             
-            
-        
         result = [out]
         
         if include_lengths:
-            
             result.append(lengths)
         
-        #~ if include_copy_map:
-            #~ 
-            #~ result.append(copy_map)
-            #~ 
         return result
           
                 
@@ -136,8 +126,10 @@ class Dataset(object):
         srcLengths = srcData[1]
         #~ if self.copy:
             #~ srcMap = srcData[2]
-        
-        tgtBatch = tgtData[0]
+        if tgtData is not None:
+            tgtBatch = tgtData[0]
+        else:
+            tgtBatch = None
 
         # within batch sorting by decreasing length for variable length rnns
         indices = range(len(srcBatch))
@@ -146,9 +138,6 @@ class Dataset(object):
         
         if tgtBatch is not None:
             batch_tuple = (indices, srcBatch, tgtBatch)
-        
-        #~ if self.copy:
-            #~ batch_tuple += (srcMap, )
         
         
         batch = zip(*batch_tuple)
@@ -183,13 +172,8 @@ class Dataset(object):
         srcTensor = wrap(srcBatch, self._type)
         tgtTensor = wrap(tgtBatch, "text")
         
-        #~ if self.copy:
-            #~ srcMapTensor = wrap(srcMap)
         
         result = ((srcTensor, lengths), tgtTensor)
-        
-        #~ if self.copy:
-            #~ result += (srcMapTensor, )
         
         result += (indices, )
         

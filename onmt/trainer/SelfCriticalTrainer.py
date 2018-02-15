@@ -55,10 +55,11 @@ def compute_score(score, samples, ref, tgtDict, batch_size, average=True):
 
 class SCSTTrainer(object):
     
-    def __init__(self, model, trainSets, validSets, dataset, optim, evaluator, opt):
+    def __init__(self, model, trainLoader, validSets, dataset, optim, evaluator, opt):
         
         self.model = model
-        self.trainSets = trainSets
+        #~ self.trainSets = trainSets
+        self.trainLoader = trainLoader
         self.validSets = validSets
         self.dicts = dataset['dicts']
         self.dataset = dataset
@@ -66,9 +67,7 @@ class SCSTTrainer(object):
         self.evaluator = evaluator
         self.opt = opt
         self.override = opt.override
-        
-        self.criterions = onmt.Models.NMTCriterion(self.dicts['tgt'], cuda=(len(self.opt.gpus) >= 1))
-        
+                
         if opt.reinforce_metrics == 'gleu':
             self.score = sentence_gleu
         elif opt.reinforce_metrics == 'hit':
@@ -84,21 +83,34 @@ class SCSTTrainer(object):
         self.adapt_tgt = opt.adapt_tgt
         self.adapt_pair = opt.pairID
         
+        self.trainLoader.adapt = self.adapt
+        self.trainLoader.adapt_src = opt.adapt_src
+        self.trainLoader.adapt_src = opt.adapt_tgt
+        self.trainLoader.adapt_src = opt.pairID
+        
+        self.trainLoader.reset_iterators()
+        self.num_updates = 0
+        
         self.best_bleu = 0.00
         
+        self.optim.set_parameters(self.model.parameters())
+        
     
-    def run(self):
+    def run(self, checkpoint=None):
+        
+        if checkpoint is not None and self.opt.reset_optim == False:
+            print("Loading optimizer state from checkpoint")
+            self.optim.load_state_dict(checkpoint['optim'])
         
         print(self.model)
         self.model.train()
         opt = self.opt
-        trainSets = self.trainSets
+        trainLoader = self.trainLoader
         validSets = self.validSets
         model = self.model
         dicts = self.dicts
         
         evaluator = self.evaluator
-        criterions = self.criterions
         dataset = self.dataset
         optim = self.optim
     
@@ -108,19 +120,17 @@ class SCSTTrainer(object):
         
         def trainEpoch(epoch, batchOrder=None):
 
-            # Shuffle mini batch order.
-            if not batchOrder:
-                batchOrder = dict()
-                for i in trainSets:
-                    batchOrder[i] = torch.randperm(len(trainSets[i]))
+            self.trainLoader.reset_iterators()
+            batchOrder = self.trainLoader.batchOrder
 
             total_rewards, total_sents = dict(), dict()
             report_rewards, report_tgt_words = dict(), []
             report_tgt_sents = dict()
             report_src_words = []
             start = time.time()
+            model.zero_grad()
             
-            for i in trainSets:
+            for i in validSets:
                 total_rewards[i] = 0
                 total_sents[i] = 0
                 report_rewards[i] = 0
@@ -128,65 +138,35 @@ class SCSTTrainer(object):
                 report_tgt_words.append(0)
                 report_src_words.append(0)
             
-            dataSizes = [len(trainSets[i]) for i in trainSets]
+            nSamples = self.trainLoader.dataSizes()
             
-            if self.adapt:
-                nSamples = dataSizes[self.adapt_pair]
-            else:
-                nSamples = sum(dataSizes)
-            
-            # In order to make sets sample randomly,
-            # We create a distribution over the data size
-            # In the future we can manipulate this distribution 
-            # to create biased sampling when training
-            sampleDist = torch.Tensor(len(setIDs))
-            iterators = dict()
-            for i in xrange(len(setIDs)):
-                sampleDist[i] = len(trainSets[i])
-                iterators[i] = -1
-            sampleDist = sampleDist / torch.sum(sampleDist)
+            counter = 0
+            acc_batch_size = 0
 
-            for i in range(nSamples):
+            #~ for i in range(nSamples):
+            while(not trainLoader.finished()):
                             
-                sampledSet = -1
-
-                if self.adapt:
-                    sampledSet = self.adapt_pair
-                else:
-                    # this loop is very dangerous 
-                    # because if the dataset is full then it will loop forever
-                    # need a mechanism to halt it
-                    while True:
-                        # if the sampled set is full then we re-sample 
-                        # to ensure that in one epoch we read each example once
-                        sampledSet = int(torch.multinomial(sampleDist, 1)[0])
-                        if iterators[sampledSet] + 1 < dataSizes[sampledSet]:
-                            break
+                batch, sampledSet = trainLoader.get_batch()
+                i = trainLoader.sample_iterator
                 
-                
-                iterators[sampledSet] += 1 
-                
+                tgt_id = setIDs[sampledSet][1]
                 tgt_lang = dicts['tgtLangs'][setIDs[sampledSet][1]]
                 tgt_dict = self.dicts['vocabs'][tgt_lang]
                 
-                # Get the batch index from batch order
-                batchIdx = batchOrder[sampledSet][iterators[sampledSet]] if epoch > opt.curriculum else iterators[sampledSet]
-                
-                # Get the batch
-                batch = trainSets[sampledSet][batchIdx][:-1]
                 batch_size = batch[1].size(1)
+                acc_batch_size += batch_size
                 
                 # And switch the model to the desired language mode
                 model.switchLangID(setIDs[sampledSet][0], setIDs[sampledSet][1])
                 model.switchPairID(sampledSet)
                 
-                # Do forward to the newly created graph
-                model.zero_grad()
+                #~ model.zero_grad()
+                
                 
                 ref = batch[1][1:]
                 batch_size = ref.size(1)
                 # Monte-Carlo actions and greedy actions to be sampled
-                rl_actions, greedy_actions, logprobs = model(batch, mode='rf')
+                rl_actions, greedy_actions, states, log_probs = model(batch, mode='rf', gen_greedy=True)
                 
                 # reward for samples from stochastic function
                 sampled_reward = compute_score(self.score, rl_actions, ref, tgt_dict, batch_size) 
@@ -212,20 +192,24 @@ class SCSTTrainer(object):
                 expanded_reward = rf_rewards.unsqueeze(0).expand_as(seq_mask)
                 reward_variable = Variable(expanded_reward, requires_grad=False)
                 
-                # REINFORCE loss (Sutton et al. 1992) log P(Y) * R(Y)
-                action_loss = -(logprobs * reward_variable * weight_variable).sum()
+                # REINFORCE loss (Sutton et al. 1992) - log P(Y) * R(Y)
+                action_loss = -(log_probs * reward_variable * weight_variable).sum()
                 
-                # normalize the loss by batch size
-                action_loss.div(batch_size)
                 
-                loss = action_loss
+                loss = action_loss.sum()
                 
                 # back-prop and compute the gradients
                 loss.backward()
+                
+                counter = counter + 1
+                if counter == opt.update_every:
+                    # Update the parameters.
+                    optim.step(normalizer=acc_batch_size)
+                    #~ optim.step(normalizer=1)
+                    acc_batch_size = 0
+                    counter = 0
+                    model.zero_grad()
        
-                # Update the parameters.
-                optim.step()
-
                 # Statistics for the current set
                 report_rewards[sampledSet] += R
                 report_tgt_words[sampledSet] += num_words_sampled
@@ -233,6 +217,8 @@ class SCSTTrainer(object):
                 total_rewards[sampledSet] += R
                 total_sents[sampledSet] += batch_size
                 report_tgt_sents[sampledSet] += batch_size
+                
+                
 
                 # Logging information
                 if i == 0 or (i % opt.log_interval == -1 % opt.log_interval):
@@ -257,6 +243,7 @@ class SCSTTrainer(object):
                     
                 # Saving checkpoints with validation perplexity
                 if opt.save_every > 0 and i % opt.save_every == -1 % opt.save_every :
+                    
                     valid_bleu_scores = evaluator.eval_translate(validSets)
                     avg_dev_bleu = sum(valid_bleu_scores.values()) / len(valid_bleu_scores)
                     for id in valid_bleu_scores:
@@ -312,6 +299,14 @@ class SCSTTrainer(object):
         print("Average dev BLEU scores: %g" % avg_bleu)
         
         self.best_bleu = avg_bleu
+        
+        if checkpoint is not None:
+            if 'num_updates' in checkpoint:
+                self.num_updates = checkpoint['num_updates']
+            else:
+                self.num_updates = 0
+            
+            del checkpoint 
                     
         for epoch in range(opt.start_epoch, opt.start_epoch + opt.epochs):
             print('')

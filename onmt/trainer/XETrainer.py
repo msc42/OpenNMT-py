@@ -17,6 +17,8 @@ import numpy as np
 from onmt.Loss import MemoryOptimizedNLLLoss
 from onmt.modules import MemoryOptimizedCopyLoss
 
+from onmt.Utils import get_gpu_memory_map
+
 
 def averagePPL(losses, counts=None):
     
@@ -34,10 +36,11 @@ def averagePPL(losses, counts=None):
 
 class XETrainer(object):
     
-    def __init__(self, model, trainSets, validSets, dataset, optim, evaluator, opt):
+    def __init__(self, model, trainLoader, validSets, dataset, optim, evaluator, opt):
         
         self.model = model
-        self.trainSets = trainSets
+        #~ self.trainSets = trainSets
+        self.trainLoader = trainLoader
         self.validSets = validSets
         self.dicts = dataset['dicts']
         self.dataset = dataset
@@ -63,13 +66,29 @@ class XETrainer(object):
         self.adapt_tgt = opt.adapt_tgt
         self.adapt_pair = opt.pairID
         
+        self.trainLoader.adapt = self.adapt
+        self.trainLoader.adapt_src = opt.adapt_src
+        self.trainLoader.adapt_src = opt.adapt_tgt
+        self.trainLoader.adapt_src = opt.pairID
+        
+        self.trainLoader.reset_iterators()
+        self.num_updates = 0
+        
+        self.optim.set_parameters(self.model.parameters())
+        
+        
     
-    def run(self):
+    def run(self, checkpoint=None):
+        
+        if checkpoint is not None and not self.opt.reset_optim:
+            print("[INFO] Loading optimizer state from checkpoint")
+            self.optim.load_state_dict(checkpoint['optim'])
         
         print(self.model)
         self.model.train()
         opt = self.opt
-        trainSets = self.trainSets
+        #~ trainSets = self.trainSets
+        trainLoader = self.trainLoader
         validSets = self.validSets
         model = self.model
         dicts = self.dicts
@@ -86,66 +105,38 @@ class XETrainer(object):
         
         def trainEpoch(epoch, batchOrder=None):
 
-            # Shuffle mini batch order.
-            if not batchOrder:
-                batchOrder = dict()
-                for i in trainSets:
-                    batchOrder[i] = torch.randperm(len(trainSets[i]))
+            
+            self.trainLoader.reset_iterators()
+            batchOrder = self.trainLoader.batchOrder
 
             total_loss, total_words = dict(), dict()
             report_loss, report_tgt_words = dict(), []
             report_src_words = []
             start = time.time()
             
-            for i in trainSets:
+            for i in validSets:
                 total_loss[i] = 0
                 total_words[i] = 0
                 report_loss[i] = 0
                 report_tgt_words.append(0)
                 report_src_words.append(0)
+                
+            nSamples = self.trainLoader.dataSizes()
             
-            dataSizes = [len(trainSets[i]) for i in trainSets]
             
-            if self.adapt:
-                nSamples = dataSizes[self.adapt_pair]
-            else:
-                nSamples = sum(dataSizes)
-            
-            # In order to make sets sample randomly,
-            # We create a distribution over the data size
-            # In the future we can manipulate this distribution 
-            # to create biased sampling when training
-            sampleDist = torch.Tensor(len(setIDs))
-            iterators = dict()
-            for i in xrange(len(setIDs)):
-                sampleDist[i] = len(trainSets[i])
-                iterators[i] = -1
-            sampleDist = sampleDist / torch.sum(sampleDist)
+            # we don't know the number of samples if not all samples is loaded ?
 
-            for i in range(nSamples):
-                            
-                sampledSet = -1
-
-                if self.adapt:
-                    sampledSet = self.adapt_pair
-                else:
-                    # this loop is very dangerous 
-                    # because if the dataset is full then it will loop forever
-                    # need a mechanism to halt it
-                    while True:
-                        # if the sampled set is full then we re-sample 
-                        # to ensure that in one epoch we read each example once
-                        sampledSet = int(torch.multinomial(sampleDist, 1)[0])
-                        if iterators[sampledSet] + 1 < dataSizes[sampledSet]:
-                            break
+            #~ for i in range(nSamples):
+            while(not trainLoader.finished()):
                 
-                iterators[sampledSet] += 1 
                 
-                # Get the batch index from batch order
-                batchIdx = batchOrder[sampledSet][iterators[sampledSet]] if epoch > opt.curriculum else iterators[sampledSet]
+                batch, sampledSet = trainLoader.get_batch()
+                i = trainLoader.sample_iterator
                 
-                # Get the batch
-                batch = trainSets[sampledSet][batchIdx][:-1]
+                #~ if sampledSet == -1:
+                    #~ break
+                
+                batch = batch[:-1] # remove the indices
                 batch_size = batch[1].size(1)
                 
                 # And switch the model to the desired language mode
@@ -167,6 +158,7 @@ class XETrainer(object):
                              
                 # Update the parameters.
                 optim.step()
+                self.num_updates += 1
 
                 # Statistics for the current set
                 num_words = targets.data.ne(onmt.Constants.PAD).sum()
@@ -203,14 +195,14 @@ class XETrainer(object):
                     
                     
                     bleu_scores = evaluator.eval_translate(validSets)
-                    for i in xrange(len(setIDs)):
-                        setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
-                        print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[i]))
+                    for k in xrange(len(setIDs)):
+                        setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][k])
+                        print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[k]))
 
                     valid_ppl = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-                    for i in xrange(len(setIDs)):
-                        setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
-                        print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[i]))
+                    for k in xrange(len(setIDs)):
+                        setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][k])
+                        print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[k]))
 
                     
                     avgDevPpl = averagePPL(valid_ppl)
@@ -226,31 +218,38 @@ class XETrainer(object):
                     optim_state_dict = optim.state_dict()
                     #  drop a checkpoint
 
-                    ep = float(epoch) - 1.0 + float(i + 1.0) / float(nSamples)
-
                     checkpoint = {
                             'model': model_state_dict,
                             'generator': generator_state_dict,
                             'dicts': dataset['dicts'],
                             'opt': opt,
-                            'epoch': ep,
+                            'num_updates': self.num_updates,
                             'iteration' : i,
                             'batchOrder' : batchOrder,
                             'optim': optim_state_dict
                     }
                     
-                    file_name = '%s_ppl_%.2f_e%.2f.pt'
-                    print('Writing to %s_ppl_%.2f_e%.2f.pt' % (opt.save_model, avgDevPpl, ep))
+                    file_name = '%s_ppl_%.2f_e%d.pt'
+                    print('Writing to %s_ppl_%.2f_iter%d.pt' % (opt.save_model, avgDevPpl, self.num_updates))
                     torch.save(checkpoint,
                          file_name
-                         % (opt.save_model, avgDevPpl, ep))
+                         % (opt.save_model, avgDevPpl, self.num_updates ))
             return [total_loss[j] / total_words[j] for j in xrange(len(setIDs))]
             
         
-        bleu_scores = evaluator.eval_translate(validSets)
-        for i in xrange(len(setIDs)):
-            setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
-            print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[i]))
+        if checkpoint is not None:
+            bleu_scores = evaluator.eval_translate(validSets)
+            for i in xrange(len(setIDs)):
+                setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
+                print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[i]))
+            
+            if 'num_updates' in checkpoint:
+                self.num_updates = checkpoint['num_updates']
+            else:
+                self.num_updates = 0
+                
+            del checkpoint # to save memory
+            
 
         valid_ppl = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
 
@@ -297,7 +296,7 @@ class XETrainer(object):
                 'generator': generator_state_dict,
                 'dicts': dataset['dicts'],
                 'opt': opt,
-                'epoch': epoch,
+                'num_updates': self.num_updates,
                 'iteration' : -1,
                 'batchOrder' : None,
                 'optim': optim_state_dict
@@ -305,7 +304,7 @@ class XETrainer(object):
             
                     
             file_name = '%s_ppl_%.2f_e%d.pt'
-            print('Writing to %s_ppl_%.2f_e%d.pt' % (opt.save_model, avgDevPpl, epoch))
+            print('Writing to %s_ppl_%.2f_e%d.pt' % (opt.save_model, avgDevPpl, self.num_updates))
             torch.save(checkpoint,
                                          file_name
-                                         % (opt.save_model, avgDevPpl, epoch))
+                                         % (opt.save_model, avgDevPpl, self.num_updates))

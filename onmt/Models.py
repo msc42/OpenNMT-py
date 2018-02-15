@@ -227,6 +227,9 @@ class NMTModel(nn.Module):
         
         log_probs = []
         
+        hiddens = []
+        
+        states = []
         
         
         for t in xrange(max_length):
@@ -236,9 +239,9 @@ class NMTModel(nn.Module):
             state = state.squeeze(0)
             
             if self.copy_pointer:
-                output = self.generator(state, attn_t, src, return_log=False)
+                output = self.generator(state, attn_t, src, return_log=True)
             else:
-                output = self.generator(state, return_log=False)
+                output = self.generator(state, return_log=True)
              
             if argmax:
                 sample_ = torch.topk(output, 1, dim=1)[1]
@@ -246,22 +249,13 @@ class NMTModel(nn.Module):
                 
                 
             else: # Stochastic sampling
-                dist = output
+                #~ dist = output
                 #~ dist = output.exp()
+                dist = output.data.exp()
                 
-                sample_ = dist.multinomial(1)
+                sample = dist.multinomial(1)
                 
-                sample = sample_.data
                 
-   
-            # log_prob of action at time T
-            
-            prob_t = output.gather(1, Variable(sample)).t() # 1 * batch_size
-            
-            log_prob_t = torch.log(prob_t)
-            #~ log_prob_t = prob_t
-                        
-            log_probs.append(log_prob_t) 
             
             # log prob of the samples
             check = (sample == onmt.Constants.EOS)
@@ -279,12 +273,20 @@ class NMTModel(nn.Module):
             # note: one of the important steps here
             # is to generate the data (tensor) 
             # before making the actual variable
-            input_t = Variable(sample.t(), volatile=(not save), requires_grad=False)
+            input_t = Variable(sample.t_(), volatile=(not save), requires_grad=False)
+            
+            # output: batch * V
+            # input_t: 1 x batch    
+            
+            log_prob_t = output.gather(1, input_t.t()).t() # 1 * Batch_size
+            log_probs.append(log_prob_t) 
            
             sampled.append(input_t)
 
             if save:
                 assert argmax==False
+                
+            states.append(state)
                             
              # stop sampling when all sentences reach eos 
             if eos_check.sum() == batch_size:
@@ -296,11 +298,17 @@ class NMTModel(nn.Module):
         
         log_probs = torch.cat(log_probs, 0) # T x B
         
-        return sampled, log_probs
+        states = torch.stack(states) # T x B x H
+        
+        #~ hiddens = torch.cat(hiddens, 0) # T x B x H
+        
+        #~ hiddens.detach_()
+        
+        return sampled, states, log_probs
 
     # Forward pass :
     # Two (or more) modes: Cross Entropy or Reinforce
-    def forward(self, input, mode='xe', max_length=64, gen_greedy=True):
+    def forward(self, input, mode='xe', max_length=64, gen_greedy=False):
         src = input[0]
         tgt = input[1][:-1]  # exclude last target from inputs
         enc_hidden, context = self.encoder(src)
@@ -339,17 +347,17 @@ class NMTModel(nn.Module):
             init_input = self.make_init_input(src)
             
             # save=True so that the stochastic actions will be saved for the backward pass
-            rl_samples, logprobs = self.sample_from_context(context, init_output, enc_hidden, 
+            rl_samples, states, logprobs = self.sample_from_context(context, init_output, enc_hidden, 
                                             init_input, argmax=False, max_length=min(length + 5, 51), save=True, src=src[0])
             # By default: the baseline is the samples from greedy search
             
             if gen_greedy:
                 
-                greedy_samples,  _ = self.sample_from_context(context, init_output, enc_hidden, 
+                greedy_samples, _, _ = self.sample_from_context(context, init_output, enc_hidden, 
                                                     init_input, argmax=True, max_length=min(length + 5, 51), src=src[0])                                                                                                                                                                 
-                return rl_samples, greedy_samples, logprobs
+                return rl_samples, greedy_samples, states, logprobs
             else:
-                return rl_samples, logprobs
+                return rl_samples, states, logprobs
         
         else:
             raise NotImplementedError
@@ -442,14 +450,14 @@ class Generator(nn.Module):
 
 class NMTCriterion(object):
     
-    def __init__(self, dicts, cuda=True):
+    def __init__(self, dicts, cuda=True, reduce=True):
         crits = dict()
         for i in dicts:
             vocabSize = dicts[i].size()
             
             weight = torch.ones(vocabSize)
             weight[onmt.Constants.PAD] = 0
-            crit = nn.NLLLoss(weight, size_average=False)
+            crit = nn.NLLLoss(weight, size_average=False, reduce=reduce)
             if cuda:
                 crit.cuda()
             
@@ -467,5 +475,8 @@ class NMTCriterion(object):
         loss_data = loss.data[0]
         if backward:
             loss.backward()
+            return loss_data
+        else:
+            return loss 
             
-        return loss_data
+        

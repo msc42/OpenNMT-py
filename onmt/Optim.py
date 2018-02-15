@@ -1,5 +1,49 @@
 import torch.optim as optim
-from torch.nn.utils import clip_grad_norm
+import torch
+from copy import deepcopy
+from itertools import chain
+from torch.autograd import Variable
+from collections import defaultdict, Iterable
+
+
+#~ from torch.nn.utils import clip_grad_norm
+
+def clip_grad_norm(parameters, max_norm, normalizer=1, norm_type=2):
+    r"""Clips gradient norm of an iterable of parameters.
+
+    The norm is computed over all gradients together, as if they were
+    concatenated into a single vector. Gradients are modified in-place.
+
+    Arguments:
+        parameters (Iterable[Variable]): an iterable of Variables that will have
+            gradients normalized
+        max_norm (float or int): max norm of the gradients
+        norm_type (float or int): type of the used p-norm. Can be ``'inf'`` for
+            infinity norm.
+
+    Returns:
+        Total norm of the parameters (viewed as a single vector).
+    """
+    parameters = list(filter(lambda p: p.grad is not None, parameters))
+    max_norm = float(max_norm)
+    norm_type = float(norm_type)
+    
+    if norm_type == float('inf'):
+        total_norm = max(p.grad.data.abs().max() for p in parameters)
+    else:
+        total_norm = 0
+        for p in parameters:
+            if normalizer > 1:
+                p.grad.data.div_(normalizer)
+            
+            param_norm = p.grad.data.norm(norm_type)
+            total_norm += param_norm ** norm_type
+        total_norm = total_norm ** (1. / norm_type)
+    clip_coef = max_norm / (total_norm + 1e-6)
+    if clip_coef < 1 and clip_coef > 0:
+        for p in parameters:
+            p.grad.data.mul_(clip_coef)
+    return total_norm
 
 
 class Optim(object):
@@ -26,11 +70,16 @@ class Optim(object):
         self.lr_decay = lr_decay
         self.start_decay_at = start_decay_at
         self.start_decay = False
+    
+    def normalize_grad(self, denom):
+        
+        parameters = list(filter(lambda p: p.grad is not None, self.params))
+        
 
-    def step(self):
+    def step(self, normalizer=1):
         "Compute gradients norm."
         if self.max_grad_norm:
-            total_norm = clip_grad_norm(self.params, self.max_grad_norm)
+            total_norm = clip_grad_norm(self.params, self.max_grad_norm, normalizer=normalizer)
         self.optimizer.step()
         return total_norm
 
@@ -66,5 +115,56 @@ class Optim(object):
         return self.optimizer.state_dict()
     
     def load_state_dict(self, state_dict):
+        
+        """Loads the optimizer state.
+        Arguments:
+            state_dict (dict): optimizer state. Should be an object returned
+                from a call to :meth:`state_dict`.
+        """
+        # deepcopy, to be consistent with module API
+        state_dict = deepcopy(state_dict)
+        # Validate the state_dict
+        groups = self.optimizer.param_groups
+        saved_groups = state_dict['param_groups']
+
+        if len(groups) != len(saved_groups):
+            raise ValueError("loaded state dict has a different number of "
+                             "parameter groups")
+        param_lens = (len(g['params']) for g in groups)
+        saved_lens = (len(g['params']) for g in saved_groups)
+        if any(p_len != s_len for p_len, s_len in zip(param_lens, saved_lens)):
+            raise ValueError("loaded state dict contains a parameter group "
+                             "that doesn't match the size of optimizer's group")
+
+        # Update the state
+        id_map = {old_id: p for old_id, p in
+                  zip(chain(*(g['params'] for g in saved_groups)),
+                      chain(*(g['params'] for g in groups)))}
+
+        def cast(param, value):
+            """Make a deep copy of value, casting all tensors to device of param."""
+            if torch.is_tensor(value):
+                # Floating-point types are a bit special here. They are the only ones
+                # that are assumed to always match the type of params.
+                if any(tp in type(param.data).__name__ for tp in {'Half', 'Float', 'Double'}):
+                    value = value.type_as(param.data)
+                value = value.cuda(param.get_device()) if param.is_cuda else value.cpu()
+                return value
+            elif isinstance(value, dict):
+                return {k: cast(param, v) for k, v in value.items()}
+            elif isinstance(value, Iterable):
+                return type(value)(cast(param, v) for v in value)
+            else:
+                return value
+
+        # Copy state assigned to params (and cast tensors to appropriate types).
+        # State that is not assigned to params is copied as is (needed for
+        # backward compatibility).
+        state = defaultdict(dict)
+        for k, v in state_dict['state'].items():
+            if k in id_map:
+                param = id_map[k]
+                state[param] = cast(param, v)
+            else:
+                state[k] = v
     
-        self.optimizer.load_state_dict(state_dict)

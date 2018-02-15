@@ -38,3 +38,26 @@ def build_model(opt, dicts, nSets):
         model.shareProjection(generator)
     
     return model, generator
+
+"""
+    In the case of multi-lingual, should we share the critics for all languages ?
+"""
+def build_critic(opt, dicts):
+    
+    if opt.critic == 'self':
+        return
+        
+    if opt.critic == 'mlp':
+        from onmt.modules import MLPCritic
+        critic = MLPCritic(opt)
+    else:
+        raise NotImplementedError
+    
+    if len(opt.gpus) >= 1:
+        critic.cuda()
+    
+    for p in critic.parameters():
+        p.data.uniform_(-opt.param_init, opt.param_init)
+        
+    return critic
+    

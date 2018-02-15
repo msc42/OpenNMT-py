@@ -172,6 +172,9 @@ class MemoryOptimizedNLLLoss(object):
             generator: in case we want to save memory and 
             **kwargs(optional): additional info for computing loss.
         """
+        if isinstance(outputs, tuple):
+            outputs = outputs[0]
+        
         batch_size = outputs.size(1)
         n_words = targets.data.ne(onmt.Constants.PAD).sum()
         outputs_ = outputs

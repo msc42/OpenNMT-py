@@ -106,51 +106,62 @@ class CopyGenerator(nn.Module):
     
     def forward(self, input, attn, src, return_log=True):
         
-        # CHECKS
-        #~ batch_by_tlen, _ = input.size()
-        
-        #~ batch_size = input.size(1)
-        # flatten the input
+        """ First, we want to flatten the input """
         input = input.view(-1, input.size(-1))
         attn = attn.view(-1, attn.size(-1))
         batch_by_tlen_, slen = attn.size()
+        batch_size = src.size(1)
+        tlen = batch_by_tlen_ / batch_size
         
         
-        # first, compute the normal distribution
+        # Compute the normal distribution by logits
         logits = self.linear(input)
         
-        prob = F.softmax(logits) # tlen * batch x vocab_size
+        p_g = F.softmax(logits) # tlen * batch x vocab_size
         
         # Decide mixture coefficients
         copy = F.sigmoid(self.linear_copy(input))
         
         # Probibility of word coming from the generator distribution
-        p_g = torch.mul(prob,  1 - copy.expand_as(prob)) # tlen * batch x 1
+        #~ p_g = torch.mul(prob,  1 - copy.expand_as(prob)) # tlen * batch x 1
+        p_g = p_g.mul(1 - copy.expand_as(p_g))
         
         # Probibility of word coming from the copy pointer distribution
-        mul_attn = torch.mul(attn, copy.expand_as(attn)) # tlen * batch x slen
+        p_c = torch.mul(attn, copy.expand_as(attn)) # tlen * batch x slen
         
         # create a mapping function (one hot vector) for the source positions
-        src_map = self.one_hots[self.linear.currentID](src) # slen x batch x vocab_size
-        batch_size = src_map.size(1)
+        #~ src_map = self.one_hots[self.linear.currentID](src) # slen x batch x vocab_size
+        #~ batch_size = src_map.size(1)
+        #~ print(p_g.size())
+        #~ print(src.size())
+        #~ print(p_c.size())
+        
+        
+        # Idea: the ids of the source words are the same as the ids of the target words
+        # So all we need to do is the scatter_add the corresponding probabilities to the output distribution
+        # and avoid large matrices multiplication
+        
+        # In_place seems to work here, but if we modify p_g then error will appear
+        p_g.scatter_add_(1, src.t().repeat(tlen, 1), p_c)
+       
         
         # matrix multiplication:
         # b x tlen x slen  *  b x slen x vocabsize
         # transpose into tlen x b x slen
-        p_c = torch.bmm(mul_attn.view(-1 , batch_size, slen).transpose(0, 1),
-                              src_map.transpose(0, 1)).transpose(0, 1)
+        #~ p_c = torch.bmm(mul_attn.view(-1 , batch_size, slen).transpose(0, 1),
+                              #~ src_map.transpose(0, 1)).transpose(0, 1)
+        #~ 
+        #~ p_c = p_c.contiguous().view(-1, p_c.size(-1))
         
-        p_c = p_c.contiguous().view(-1, p_c.size(-1))
-        
-        output = p_g + p_c
+        #~ output = p_g + p_c
         
         # log probabilities
         
-        if return_log:
-            output = torch.log(output)  
-            
-        src_map.detach()
+        output = p_g.clamp(min=1e-8)
         
+        if return_log:
+            output = torch.log(output)
+                    
         return output
         
 class MemoryOptimizedCopyLoss(MemoryOptimizedNLLLoss):
@@ -185,9 +196,6 @@ class MemoryOptimizedCopyLoss(MemoryOptimizedNLLLoss):
             
             # compute the distribution 
             if generator is not None:
-                
-                #~ outputs_t = outputs_t.view(-1, outputs_t.size(-1))
-                #~ attn_t = attn_t.view(-1, attn_t.size(-1))
                 src = batch[0][0]
                 dist_t = generator(outputs_t, attn_t, src)
             else:

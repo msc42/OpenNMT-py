@@ -1,6 +1,6 @@
 from __future__ import division
 
-import warnings
+import warnings, os
 warnings.filterwarnings('ignore')
 
 import onmt
@@ -19,6 +19,8 @@ import time
 
 from onmt.trainer.Evaluator import Evaluator
 from onmt.ModelConstructor import build_model
+
+#~ from onmt.MultiShardLoader import MultiShardLoader
 
 parser = argparse.ArgumentParser(description='train.py')
 onmt.Markdown.add_md_help_argument(parser)
@@ -43,6 +45,8 @@ parser.add_argument('-adapt_tgt', default='',
                     help="""target language to adapt""")
 parser.add_argument('-override', action='store_true',
                     help="""Overwrite the save file to reduce space consumption""")
+parser.add_argument('-loading_strategy', default='all',
+                    help="How to load the data. Default strategy = all. Choices=all|piece")
 # Model options
 
 parser.add_argument('-layers', type=int, default=2,
@@ -69,6 +73,8 @@ parser.add_argument('-brnn_merge', default='concat',
 parser.add_argument('-encoder_type', default='text',
                     help="Type of encoder to use. Options are [text|img].")
 parser.add_argument('-batch_size', type=int, default=64,
+                    help='Maximum batch size')
+parser.add_argument('-update_every', type=int, default=1,
                     help='Maximum batch size')
 parser.add_argument('-max_generator_batches', type=int, default=32,
                     help="""Maximum batches of words in a sequence to run
@@ -102,8 +108,11 @@ parser.add_argument('-reinforce', action='store_true',
 parser.add_argument('-reinforce_metrics', default='gleu',
                     help="Type of metrics to use. Options are [gleu|hit].")    
 parser.add_argument('-hit_alpha', type=float, default=0.3,
-                    help='Dropout probability; applied between LSTM stacks.')
-
+                    help='Coefficient for reward function. The more the focused on rare word rewarding')
+parser.add_argument('-critic', default='self',
+                    help='Type of critic to be used')
+parser.add_argument('-pretrain_critic', action='store_true',
+                    help='Type of critic to be used')
 # learning rate
 parser.add_argument('-learning_rate', type=float, default=1.0,
                     help="""Starting learning rate. If adagrad/adadelta/adam is
@@ -159,6 +168,8 @@ opt = parser.parse_args()
 
 print(opt)
 
+print(torch.__version__)
+
 if torch.cuda.is_available() and not opt.gpus:
     print("WARNING: You have a CUDA device, should run with -gpus 0")
 
@@ -188,60 +199,73 @@ def NMTCriterion(dicts):
 
 
 def main():
-    print("Loading data from '%s'" % opt.data)
-
-    dataset = torch.load(opt.data)
-    print("Done")
+    
+    dataset = dict()
+    
+    print("Loading dicts from '%s'" % opt.data + "/dicts_info.pt")
+    dataset['dicts'] = torch.load(opt.data + "/dicts_info.pt")
+    
     
     dict_checkpoint = opt.train_from_state_dict
-    
     if dict_checkpoint:
-        print('Loading dicts from checkpoint at %s' % dict_checkpoint)
-        checkpoint = torch.load(dict_checkpoint)
-        dataset['dicts'] = checkpoint['dicts']
+        #~ print('Loading dicts from checkpoint at %s' % dict_checkpoint)
+        checkpoint = torch.load(dict_checkpoint, map_location=lambda storage, loc: storage)
+        #~ dataset['dicts'] = checkpoint['dicts']
+    else:
+        checkpoint = None
     
     dicts = dataset['dicts']
+    
+    dataset['valid'] = torch.load(opt.data + "/valid.pt")
+    valid_set = dataset['valid']
+    
+    #~ print("Loading training data from '%s'" % opt.data + "/train.pt.*")
+    
+    
+    
+    dataset['train'] = dict()
+    
+    #~ torch.load(opt.data + "/train.pt.0")
+    
+    print("Done")
+    
     nSets = dicts['nSets']
     setIDs = dicts['setIDs']
     print(' * Vocabulary sizes: ')
     for lang in dicts['langs']:
         print(' * ' + lang + ' = %d' % dicts['vocabs'][lang].size())
+        
+    # A wrapper to manage data loading
+    trainLoader = onmt.MultiShardLoader(opt, dicts)
 
     trainSets = dict()
     validSets = dict()
     for i in xrange(nSets):
         
-        src_dict = dicts['src'][setIDs[i][0]]
-        tgt_dict = dicts['tgt'][setIDs[i][1]]
-        trainSets[i] = onmt.Dataset(dataset['train']['src'][i], dataset['train']['tgt'][i],
-                             opt.batch_size, opt.gpus, copy=opt.copy_pointer)
+        #~ trainSets[i] = onmt.Dataset(dataset['train']['src'][i], dataset['train']['tgt'][i],
+                             #~ opt.batch_size, opt.gpus)
             
-        validSets[i] = onmt.Dataset(dataset['valid']['src'][i], dataset['valid']['tgt'][i],
-                             opt.batch_size, opt.gpus, copy=opt.copy_pointer)
+        validSets[i] = onmt.Dataset(valid_set['src'][i], valid_set['tgt'][i],
+                             opt.batch_size, opt.gpus)
 
-        print(' * number of training sentences for set %d: %d' %
-          (i, len(dataset['train']['src'][i])))
+        #~ print(' * number of training sentences for set %d: %d' %
+          #~ (i, len(dataset['train']['src'][i])))
         
 
-    print(' * maximum batch size. %d' % opt.batch_size)
+    print('[INFO] * maximum batch size. %d' % opt.batch_size)
 
-    print('Building model...')
+    print('[INFO] Building model...')
     
     model, generator = build_model(opt, dicts, nSets)
-
-    
-    
-    #~ if opt.share_embedding:
-        #~ model.shareEmbedding(dicts)
-    #~ if opt.share_projection:
-        #~ model.shareProjection(generator)
     
     if opt.train_from_state_dict:
-        print('Loading model from checkpoint at %s'
+        print('[INFO] Loading model from checkpoint at %s'
               % opt.train_from_state_dict)
-        model.load_state_dict(checkpoint['model'])
+              
+        model_state_dict = {k: v for k, v in checkpoint['model'].items() if 'critic' not in k}
+        checkpoint['critic'] = {k: v for k, v in checkpoint['model'].items() if 'critic' in k}
+        model.load_state_dict(model_state_dict)
         generator.load_state_dict(checkpoint['generator'])
-        opt.start_epoch = int(math.floor(checkpoint['epoch'] + 1))
         
     if len(opt.gpus) >= 1:
         model.cuda()
@@ -263,18 +287,18 @@ def main():
             start_decay_at=opt.start_decay_at
     )
     
-    optim.set_parameters(model.parameters())
-
-    if opt.train_from_state_dict and opt.reset_optim == False:
-        print("Loading optimizer state from checkpoint")
-        optim.load_state_dict(checkpoint['optim'])
+    #~ optim.set_parameters(model.parameters())
+#~ 
+    #~ if opt.train_from_state_dict and opt.reset_optim == False:
+        #~ print("Loading optimizer state from checkpoint")
+        #~ optim.load_state_dict(checkpoint['optim'])
 
     
-    if opt.train_from_state_dict:
-        del checkpoint # to save memory
+    #~ if opt.train_from_state_dict:
+        #~ del checkpoint # to save memory
 
     nParams = sum([p.nelement() for p in model.parameters()])
-    print('* number of parameters: %d' % nParams)
+    print('[INFO] * number of parameters: %d' % nParams)
     
     if len(opt.adapt_src) > 0 and len(opt.adapt_tgt) > 0:
     
@@ -307,11 +331,26 @@ def main():
     evaluator = Evaluator(model, dataset, opt, cuda=(len(opt.gpus) >= 1))
     
     if opt.reinforce:
-        trainer = SCSTTrainer(model, trainSets, validSets, dataset, optim, evaluator, opt)
+        if opt.critic == 'self':
+            trainer = SCSTTrainer(model, trainLoader, validSets, dataset, optim, evaluator, opt)
+        else:
+            from onmt.ModelConstructor import build_critic
+            from onmt.trainer.ActorCriticTrainer import A2CTrainer
+            critic = build_critic(opt, dicts)
+            
+            if hasattr(model, 'critic'):
+                print("[INFO] Model already has critic")
+            else:
+                opt.reset_optim = True
+            
+            model.critic = critic
+            
+            trainer = A2CTrainer(model, trainLoader, validSets, dataset, optim, evaluator, opt)
+            #~ raise NotImplementedError
     else:
-        trainer = XETrainer(model, trainSets, validSets, dataset, optim, evaluator, opt)
+        trainer = XETrainer(model, trainLoader, validSets, dataset, optim, evaluator, opt)
     
-    trainer.run()
+    trainer.run(checkpoint=checkpoint)
 
 
 if __name__ == "__main__":
