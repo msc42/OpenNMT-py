@@ -42,10 +42,15 @@ class Encoder(nn.Module):
         return hidden_t, outputs
         
     def switchID(self, srcID):
-                
-                self.word_lut.switchID(srcID)
-                self.rnn.switchID(srcID)
-                
+        
+        self.word_lut.switchID(srcID)
+        self.rnn.switchID(srcID)
+
+    def hardSwitchID(self, srcID):
+				
+        self.word_lut.hardSwitchID(srcID)
+        self.rnn.switchID(srcID)
+				
     def switchPairID(self, srcID):
                 
                 return
@@ -144,10 +149,14 @@ class Decoder(nn.Module):
         
     
     def switchID(self, tgtID):
-                
         self.word_lut.switchID(tgtID)
         self.rnn.switchID(tgtID)
-                
+
+    def hardSwitchID(self, tgtID):
+        
+        self.word_lut.hardSwitchID(tgtID)
+        self.rnn.switchID(tgtID)
+				
     def switchPairID(self, pairID):
         
         self.attn.switchID(pairID)
@@ -373,10 +382,16 @@ class NMTModel(nn.Module):
         
                                               
     def switchLangID(self, srcID, tgtID):
-                
+        
         self.encoder.switchID(srcID)
         self.decoder.switchID(tgtID)
         self.generator.switchID(tgtID)
+    def hardSwitchLangID(self, srcID, tgtID):
+        
+        self.encoder.hardSwitchID(srcID)
+        self.decoder.hardSwitchID(tgtID)
+        self.generator.hardSwitchID(tgtID)
+
     def switchPairID(self, pairID):
                 
         self.decoder.switchPairID(pairID)
@@ -456,6 +471,10 @@ class Generator(nn.Module):
         
         self.linear.switchID(tgtID)
 
+    def hardSwitchID(self, tgtID):
+		
+        self.linear.hardSwitchID(tgtID)
+
 
 class NMTCriterion(object):
     
@@ -488,4 +507,3 @@ class NMTCriterion(object):
         else:
             return loss 
             
-        

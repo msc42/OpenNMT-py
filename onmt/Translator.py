@@ -100,7 +100,7 @@ class Translator(object):
             print(" * Translating with pair %i " % pair)
             #~ print(srcID, tgtID)
             #~ print(self.model)
-            this_model.switchLangID(srcID, tgtID)
+            this_model.hardSwitchLangID(srcID, tgtID)
             this_model.switchPairID(pair) 
             
             self.models.append(this_model)
