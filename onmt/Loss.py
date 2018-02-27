@@ -64,6 +64,8 @@ class KLDivLoss(nn.Module):
         likelihood.masked_fill_(tdata.eq(onmt.Constants.PAD), 0)
         tmp_ = self.one_hot.repeat(target.size(0), 1)
         tmp_.scatter_(1, tdata.unsqueeze(1), self.confidence)
+        
+        
         if mask.dim() > 0:
             likelihood.index_fill_(0, mask, 0)
             tmp_.index_fill_(0, mask, 0)
@@ -174,30 +176,57 @@ class MemoryOptimizedNLLLoss(object):
         """
         if isinstance(outputs, tuple):
             outputs = outputs[0]
+            
+        mask = torch.autograd.Variable(targets.data.ne(onmt.Constants.PAD))
+        # mask = None
         
         batch_size = outputs.size(1)
+        h_size = outputs.size(-1)
         n_words = targets.data.ne(onmt.Constants.PAD).sum()
-        outputs_ = outputs
         
-        outputs = torch.autograd.Variable(outputs.data, requires_grad=(backward))
-                
+        # flatten the output
+        outputs = outputs.contiguous().view(-1, outputs.size(-1))
+        targets = targets.view(-1)
+        
+        if mask is not None:
+            """ We remove all positions with PAD """
+            flattened_mask = mask.view(-1)
+            
+            non_pad_indices = torch.nonzero(flattened_mask).squeeze(1)
+            
+            clean_input = outputs.index_select(0, non_pad_indices)
+            
+            clean_targets = targets.index_select(0, non_pad_indices)
+        
+        else:
+            clean_input = outputs
+            clean_targets = targets
+        
+        detached_outputs = clean_input
+        #~ outputs_ = outputs
+        
+        outputs = torch.autograd.Variable(detached_outputs.data, requires_grad=(backward))
+         
+        #~ shard_tokens 
         outputs_split = torch.split(outputs, self.shard_split)
-        targets_split = torch.split(targets, self.shard_split)
+        targets_split = torch.split(clean_targets, self.shard_split)
+        
+        
         
         loss_data = 0
         for i, (outputs_t, target_t) in enumerate(zip(outputs_split, targets_split)):
             
             # compute the distribution 
             if generator is not None:
-                dist_t = generator(outputs_t.view(-1, outputs_t.size(-1)), batch)
+                dist_t = generator(outputs_t, batch)
             else:
-                dist_t = outputs_t.view(-1, outputs_t.size(-1))
+                dist_t = outputs_t
            
             
             # actual loss function between the predictive distribution and target
             
             # flatten the distributions and the targets
-            target_t = target_t.view(-1)
+            #~ target_t = target_t.view(-1)
             loss_t, loss_data_t = self._compute_loss(dist_t, target_t, setID)
 
             loss_data += loss_data_t
@@ -210,7 +239,7 @@ class MemoryOptimizedNLLLoss(object):
         grad_outputs = None if outputs.grad is None else outputs.grad.data
         
         if backward:
-            variables = [outputs_]
+            variables = [detached_outputs]
             grads = [grad_outputs]
             torch.autograd.backward(variables, grads)
         

@@ -22,8 +22,8 @@
 #~ 
 import torch
 import torch.nn as nn
-#~ 
-#~ 
+import torch.nn.functional as F
+
 class GlobalAttention(nn.Module):
     def __init__(self, dim):
         super(GlobalAttention, self).__init__()
@@ -97,41 +97,54 @@ class GlobalAttention(nn.Module):
         contextOutput = self.tanh(self.linear_out(gatedContextCombined))
 
         return contextOutput, attn
+        
+        
+class AttentionLayer(nn.Module):
+    def __init__(self, dim):
+        super(AttentionLayer, self).__init__()
+        self.linear_in = nn.Linear(dim, dim, bias=False)
+        self.sm = nn.Softmax()
+        self.linear_out = nn.Linear(dim*2, dim, bias=False)
+
+        self.mask = None
+        
+
+    def applyMask(self, mask):
+        self.mask = mask
+
+    def forward(self, input, context):
+        """
+        input: targetL x batch x dim
+        context: batch x sourceL x dim
+        """
+        bsize = context.size(0)
+        seq_length = context.size(1)
+        dim = context.size(2)
+        
+        
+        # project the hidden state (query)
+        targetT = self.linear_in(input).transpose(0, 1) # batch x targetL x dim
+        
+        context_ = context.transpose(1, 2) # batch x dim x sourceL 
+        
+        scores = torch.bmm(targetT, context_) # batch x targetL x sourceL 
+
+        # Get attention
+        if self.mask is not None:
+            attn.data.masked_fill_(self.mask, -float('inf'))
+        attn = self.sm(scores.view(-1, scores.size(-1)))
+        
+        attn = attn.view(bsize, -1, seq_length) # batch x targetL x sourceL 
+        
+        c = torch.bmm(attn, context)  # batch x targetL x dim
+        
+        concat_c = torch.cat([c.transpose(0, 1), input], 2)
+        
+        combined_c = self.linear_out(concat_c)
+        
+        output = F.tanh(combined_c)
+
+        return output, attn
 
 
-#~ import torch
-#~ import torch.nn as nn
-#~ 
-#~ 
-#~ class GlobalAttention(nn.Module):
-    #~ def __init__(self, dim):
-        #~ super(GlobalAttention, self).__init__()
-        #~ self.linear_in = nn.Linear(dim, dim, bias=False)
-        #~ self.sm = nn.Softmax()
-        #~ self.linear_out = nn.Linear(dim*2, dim, bias=False)
-        #~ self.tanh = nn.Tanh()
-        #~ self.mask = None
-#~ 
-    #~ def applyMask(self, mask):
-        #~ self.mask = mask
-#~ 
-    #~ def forward(self, input, context):
-        #~ """
-        #~ input: batch x dim
-        #~ context: batch x sourceL x dim
-        #~ """
-        #~ targetT = self.linear_in(input).unsqueeze(2)  # batch x dim x 1
-#~ 
-        #~ # Get attention
-        #~ attn = torch.bmm(context, targetT).squeeze(2)  # batch x sourceL
-        #~ if self.mask is not None:
-            #~ attn.data.masked_fill_(self.mask, -float('inf'))
-        #~ attn = self.sm(attn)
-        #~ attn3 = attn.view(attn.size(0), 1, attn.size(1))  # batch x 1 x sourceL
-#~ 
-        #~ weightedContext = torch.bmm(attn3, context).squeeze(1)  # batch x dim
-        #~ contextCombined = torch.cat((weightedContext, input), 1)
-#~ 
-        #~ contextOutput = self.tanh(self.linear_out(contextCombined))
-#~ 
-        #~ return contextOutput, attn
+

@@ -9,7 +9,6 @@ from onmt.modules.functional import to_one_hot
 import torch.nn.functional as F
 
 
-
 class Encoder(nn.Module):
 
     def __init__(self, opt, dicts):
@@ -326,6 +325,8 @@ class NMTModel(nn.Module):
         batch_size = tgt.size(1) 
         length = tgt.size(0)
         
+        returned_values = dict()
+        
         # Cross Entropy training:
         # Using teacher forcing and log-likelihood loss as normally
         if mode == 'xe':
@@ -354,10 +355,18 @@ class NMTModel(nn.Module):
             if gen_greedy:
                 
                 greedy_samples, _, _ = self.sample_from_context(context, init_output, enc_hidden, 
-                                                    init_input, argmax=True, max_length=min(length + 5, 51), src=src[0])                                                                                                                                                                 
-                return rl_samples, greedy_samples, states, logprobs
-            else:
-                return rl_samples, states, logprobs
+                                                    init_input, argmax=True, max_length=min(length + 5, 51), src=src[0])
+                                                    
+                returned_values['greedy_actions'] = greedy_samples
+                #~ return rl_samples, greedy_samples, states, context, logprobs
+            #~ else:
+                #~ return rl_samples, states, context, logprobs
+            returned_values['rl_actions'] = rl_samples
+            returned_values['states'] = states
+            returned_values['context'] = context
+            returned_values['logprobs'] = logprobs
+                
+            return returned_values
         
         else:
             raise NotImplementedError

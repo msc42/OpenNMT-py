@@ -166,7 +166,11 @@ class SCSTTrainer(object):
                 ref = batch[1][1:]
                 batch_size = ref.size(1)
                 # Monte-Carlo actions and greedy actions to be sampled
-                rl_actions, greedy_actions, states, log_probs = model(batch, mode='rf', gen_greedy=True)
+                #~ rl_actions, greedy_actions, states, log_probs = model(batch, mode='rf', gen_greedy=True)
+                model_outputs = model(batch, mode='rf', gen_greedy=True)
+                rl_actions = model_outputs['rl_actions']
+                log_probs = model_outputs['logprobs']
+                greedy_actions = model_outputs['greedy_actions']
                 
                 # reward for samples from stochastic function
                 sampled_reward = compute_score(self.score, rl_actions, ref, tgt_dict, batch_size) 

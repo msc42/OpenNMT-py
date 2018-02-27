@@ -99,18 +99,22 @@ class A2CTrainer(object):
     
     def run(self, checkpoint=None):
         
-        if checkpoint is not None and self.opt.reset_optim == False:
+        if checkpoint is not None:
             
             if not self.opt.reset_optim :
                 print("Loading optimizer state from checkpoint")
                 self.optim.load_state_dict(checkpoint['optim'])
             
-            if 'critic' in checkpoint and len(checkpoint['optim']) > 0:
-                self.model.critic.load_state_dict(checkpoint['optim'])
-            #~ print('[INFO] Loading model from checkpoint at %s' % self.opt.train_from_state_dict)
-            
-            #~ model.load_state_dict(checkpoint['model'])
-            #~ generator.load_state_dict(checkpoint['generator'])
+            if 'critic' in checkpoint:
+                """ A hack to seperate the state dict of the critic """
+                state_dict = dict()
+                for k in checkpoint['critic']:
+                    key = k.replace('critic.', '')
+                    state_dict[key] = checkpoint['critic'][k]
+                    
+                if len(state_dict) > 0:
+                    self.model.critic.load_state_dict(state_dict)
+                
               
                 
         
@@ -182,14 +186,22 @@ class A2CTrainer(object):
                 ref = batch[1][1:]
                 batch_size = ref.size(1)
                 # Monte-Carlo actions and logprobs to be sampled
-                rl_actions, states, log_probs = model(batch, mode='rf')
+                #~ rl_actions, states, log_probs, context = model(batch, mode='rf')
+                model_outputs = model(batch, mode='rf')
+                rl_actions = model_outputs['rl_actions']
+                states = model_outputs['states']
+                context = model_outputs['context']
+                log_probs = model_outputs['logprobs']
                 
                 # reward for samples from stochastic function
                 sampled_reward = compute_score(self.score, rl_actions, ref, tgt_dict, batch_size) 
                 
                 # compute advantage from the critic
                 # detach to prevent feedback loop from the critic
-                baselines = self.model.critic(Variable(states.data)) # T x B
+                critic_input = dict()
+                critic_input['states'] = states
+                critic_input['context'] = context
+                baselines = self.model.critic(critic_input) # T x B
                 
                 # mask: L x B
                 seq_mask = rl_actions.data.ne(onmt.Constants.PAD)
@@ -207,7 +219,7 @@ class A2CTrainer(object):
                 
                 critic_loss.backward()
                 
-                # the REINFORCE reward to be the difference between MC and greedy
+                # the REINFORCE reward to be the difference between MC and baseline
                 rf_rewards = (expanded_reward - baselines.data)
                 
                 R = torch.sum(sampled_reward)

@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch
 from torch.autograd import Variable
 from onmt.ModelConstructor import build_model
-
+from onmt.Utils import update_opt
 
 # Ensemble decoding
 
@@ -14,6 +14,8 @@ def loadImageLibs():
     global Image, transforms
     from PIL import Image
     from torchvision import transforms
+    
+
 
 
 class Translator(object):
@@ -45,7 +47,7 @@ class Translator(object):
             if opt.verbose:
                 print('Done')
 
-            model_opt = checkpoint['opt']
+            model_opt = update_opt(checkpoint['opt'])
             
             # delete optim information to save GPU memory
             if 'optim' in checkpoint:
@@ -64,13 +66,9 @@ class Translator(object):
             
             this_model, generator = build_model(model_opt, self.dicts, nSets)
             
-            #~ encoder = onmt.Models.Encoder(model_opt, self.dicts['src'])
-            #~ decoder = onmt.Models.Decoder(model_opt, self.dicts['tgt'], nSets)
-            #~ this_model = onmt.Models.NMTModel(encoder, decoder)
-#~ 
-            #~ generator = onmt.Models.Generator(model_opt, self.dicts['tgt'])
-#~ 
-            this_model.load_state_dict(checkpoint['model'])
+            
+            model_state_dict = {k: v for k, v in checkpoint['model'].items() if 'critic' not in k}
+            this_model.load_state_dict(model_state_dict)
             generator.load_state_dict(checkpoint['generator'])
 
             if opt.cuda:

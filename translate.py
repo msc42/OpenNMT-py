@@ -134,15 +134,6 @@ def main():
 
         for b in range(len(predBatch)):
             # Pred Batch always have n-best outputs  
-            #~ scores = torch.Tensor(len(predBatch[b]))
-            #~ for n in range(opt.n_best):
-                            #~ scores[n] = predScore[b][n]
-                            #~ if opt.normalize:
-                                #~ scores[n] = scores[n] / ( len(predBatch[b][n]) + 1)
-                        #~ 
-            #~ sorted_scores, sorted_index = torch.sort(scores, 0, True)
-            #~ bestSent = predBatch[b][sorted_index[0]]
-            #~ bestIndex = sorted_index[0]
             count += 1
             # Best sentence = having highest log prob
 

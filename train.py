@@ -29,6 +29,8 @@ onmt.Markdown.add_md_help_argument(parser)
 
 parser.add_argument('-data', required=True,
                     help='Path to the *-train.pt file from preprocess.py')
+parser.add_argument('-debug', action='store_true',
+                    help='Activate debug mode.')
 parser.add_argument('-save_model', default='model',
                     help="""Model filename (the model will be saved as
                     <save_model>_epochN_PPL.pt where PPL is the
@@ -145,7 +147,7 @@ parser.add_argument('-pre_word_vecs_dec',
 # GPU
 parser.add_argument('-gpus', default=[], nargs='+', type=int,
                     help="Use CUDA on the listed devices.")
-parser.add_argument('-seed', default=9999, nargs='+', type=int,
+parser.add_argument('-seed', default=9999, type=int,
                     help="Seed for deterministic runs.")
 
 parser.add_argument('-log_interval', type=int, default=100,
@@ -337,11 +339,6 @@ def main():
             from onmt.ModelConstructor import build_critic
             from onmt.trainer.ActorCriticTrainer import A2CTrainer
             critic = build_critic(opt, dicts)
-            
-            if hasattr(model, 'critic'):
-                print("[INFO] Model already has critic")
-            else:
-                opt.reset_optim = True
             
             model.critic = critic
             

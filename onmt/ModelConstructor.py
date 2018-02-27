@@ -7,6 +7,7 @@ import torch.nn as nn
 from torch import cuda
 
 from onmt.modules import CopyGenerator
+    
 
 def update_opt(opt):
     """ For backward compatibility """ 
@@ -50,6 +51,9 @@ def build_critic(opt, dicts):
     if opt.critic == 'mlp':
         from onmt.modules import MLPCritic
         critic = MLPCritic(opt)
+    elif opt.critic == 'rnn':
+        from onmt.modules import RNNCritic
+        critic = RNNCritic(opt)
     else:
         raise NotImplementedError
     

@@ -117,19 +117,21 @@ class Evaluator(object):
     
     # the only difference of this function and eval translate is that 
     # the metrics is not BLEU, but the scorer
-    #~ def eval_reinforce(self, data, verbose=False, setIDs=None):
+    def eval_reinforce(self, data, verbose=False, setIDs=None):
+        
+        pass
     #~ 
-        #~ score = self.score
+        score = self.score
         #~ 
-        #~ model = self.model
-        #~ model.eval()
+        model = self.model
+        model.eval()
         #~ 
-        #~ # return a list of scores for each language
-        #~ total_scores = dict()
-        #~ total_sentences = dict()
-        #~ 
-        #~ total_hit = 0
-        #~ total_hit_sentences = 0
+        # return a list of scores for each language
+        total_scores = dict()
+        total_sentences = dict()
+        
+        total_hit = 0
+        total_hit_sentences = 0
         #~ 
         #~ for sid in data: # sid = setid
             #~ if self.adapt:
