@@ -120,7 +120,7 @@ def saveVocabulary(name, vocab, file):
     vocab.writeFile(file)
 
 
-def makeData(srcFile, tgtFile, srcDicts, tgtDicts):
+def makeData(srcFile, tgtFile, srcDicts, tgtDicts, src_seq_length=50, tgt_seq_length=50):
     src, tgt = [], []
     sizes = []
     count, ignored = 0, 0
@@ -153,14 +153,8 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts):
         srcWords = sline.split()
         tgtWords = tline.split()
 
-        if len(srcWords) <= opt.src_seq_length \
-           and len(tgtWords) <= opt.tgt_seq_length:
-
-            # Check truncation condition.
-            if opt.src_seq_length_trunc != 0:
-                srcWords = srcWords[:opt.src_seq_length_trunc]
-            if opt.tgt_seq_length_trunc != 0:
-                tgtWords = tgtWords[:opt.tgt_seq_length_trunc]
+        if len(srcWords) <= src_seq_length \
+           and len(tgtWords) <= tgt_seq_length:
 
             if opt.src_type == "text":
                 src += [srcDicts.convertToIdx(srcWords,
@@ -200,7 +194,7 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts):
 
     print(('Prepared %d sentences ' +
           '(%d ignored due to length == 0 or src len > %d or tgt len > %d)') %
-          (len(src), ignored, opt.src_seq_length, opt.tgt_seq_length))
+          (len(src), ignored, src_seq_length, tgt_seq_length))
 
     return src, tgt
 
@@ -210,7 +204,7 @@ def main():
     if len(opt.load_from) == 0:
 
         dicts = {}
-    # First, we need to build the vocabularies
+        # First, we need to build the vocabularies
         srcLangs = opt.src_langs.split("|")
         tgtLangs = opt.tgt_langs.split("|")
         
@@ -254,8 +248,7 @@ def main():
                 
                 sortedDataFiles = list(OrderedDict.fromkeys(dataFilesWithLang))
                 dicts['vocabs'][lang] = initVocabulary(lang, sortedDataFiles, 
-                                                                                                         opt.vocab, opt.vocab_size)
-                #~ print(dataFilesWithLang)
+                                                                     opt.vocab, opt.vocab_size)
         
         # store the actual dictionaries for each side
         dicts['src'] = dict()
@@ -289,45 +282,33 @@ def main():
             
             print('Preparing training ... for set %d ' % i)
             srcSet, tgtSet = makeData(srcFiles[i], tgtFiles[i], 
-                                                                                                     srcDict, tgtDict)
+                                      srcDict, tgtDict,
+                                      src_seq_length=opt.src_seq_length,
+                                      tgt_seq_length=opt.tgt_seq_length)
+                                      
             train['src'].append(srcSet)
             train['tgt'].append(tgtSet)
             
-        #dataset = torch.load(opt.load_from)
-        
-        #dicts = dataset['dicts']
-        
-        #srcLangs = opt.src_langs.split("|")
-        #tgtLangs = opt.tgt_langs.split("|")
-        
-        #srcFiles = opt.train_src.split("|")
-        #tgtFiles = opt.train_tgt.split("|")
-
-        #validSrcFiles = opt.valid_src.split("|")
-        #validTgtFiles = opt.valid_tgt.split("|")
-        
-        #langs = dicts['langs']
+       
         
         nPairs = len(srcLangs)
-        
-        print(dicts['setIDs'])
-        
+                
         for i in range(dicts['nSets']):
             srcDict = dicts['vocabs'][srcLangs[i]]
             tgtDict = dicts['vocabs'][tgtLangs[i]]
             
-            #~ setID = uniqSrcLangs.index(srcLangs[i])
             
             srcID = dicts['srcLangs'].index(srcLangs[i])
             tgtID = dicts['tgtLangs'].index(tgtLangs[i])
             
             setID = dicts['setIDs'].index([srcID, tgtID])
             
-            #print('Preparing training ... for set %d ' % setID)
             print('Preparing validation ... for set %d ' % i)
                 
             validSrcSet, validTgtSet = makeData(validSrcFiles[i], validTgtFiles[i],
-                                                 srcDict, tgtDict)
+                                                 srcDict, tgtDict,
+                                                 src_seq_length=opt.src_seq_length + 256,
+                                                 tgt_seq_length=opt.tgt_seq_length + 256)
                                                                                                      
             valid['src'].append(validSrcSet)
             valid['tgt'].append(validTgtSet)
@@ -347,38 +328,6 @@ def main():
             
         torch.save(save_data, opt.save_data + '.train.pt')
         print('Finished.')
-    #else:
-    #    dataset = torch.load(opt.load_from)
-    
-    #    dicts = dataset['dicts']
-        
-    #    srcLangs = opt.src_langs.split("|")
-    #    tgtLangs = opt.tgt_langs.split("|")
-        
-    #    srcFiles = opt.train_src.split("|")
-    #    tgtFiles = opt.train_tgt.split("|")
-
-    #    validSrcFiles = opt.valid_src.split("|")
-    #    validTgtFiles = opt.valid_tgt.split("|")
-        
-    #    langs = dicts['langs']
-        
-   #     nPairs = len(srcLangs)
-        
-    #    print(dicts['setIDs'])
-        
-    #    for i in range(dicts['nSets']):
-    #        srcDict = dicts['vocabs'][srcLangs[i]]
-    #        tgtDict = dicts['vocabs'][tgtLangs[i]]
-            
-            #~ setID = uniqSrcLangs.index(srcLangs[i])
-            
-    #        srcID = dicts['srcLangs'].index(srcLangs[i])
-    #        tgtID = dicts['tgtLangs'].index(tgtLangs[i])
-            
-    #        setID = dicts['setIDs'].index((srcID, tgtID))
-            
-    #        print('Preparing training ... for set %d ' % setID)
 
 
 if __name__ == "__main__":
