@@ -45,6 +45,11 @@ class Encoder(nn.Module):
 				
 				self.word_lut.switchID(srcID)
 				self.rnn.switchID(srcID)
+
+    def hardSwitchID(self, srcID):
+				
+				self.word_lut.hardSwitchID(srcID)
+				self.rnn.switchID(srcID)
 				
     def switchPairID(self, srcID):
 				
@@ -133,6 +138,11 @@ class Decoder(nn.Module):
 				
 				self.word_lut.switchID(tgtID)
 				self.rnn.switchID(tgtID)
+
+    def hardSwitchID(self, tgtID):
+				
+				self.word_lut.hardSwitchID(tgtID)
+				self.rnn.switchID(tgtID)
 				
     def switchPairID(self, pairID):
 				self.attn.switchID(pairID)
@@ -180,6 +190,11 @@ class NMTModel(nn.Module):
 				self.encoder.switchID(srcID)
 				self.decoder.switchID(tgtID)
 				self.generator.switchID(tgtID)
+    def hardSwitchLangID(self, srcID, tgtID):
+				
+				self.encoder.hardSwitchID(srcID)
+				self.decoder.hardSwitchID(tgtID)
+				self.generator.hardSwitchID(tgtID)
     def switchPairID(self, pairID):
 				
 				self.decoder.switchPairID(pairID)
@@ -242,3 +257,7 @@ class Generator(nn.Module):
 	def switchID(self, tgtID):
 		
 		self.linear.switchID(tgtID)
+
+	def hardSwitchID(self, tgtID):
+		
+		self.linear.hardSwitchID(tgtID)
