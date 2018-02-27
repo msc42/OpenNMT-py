@@ -51,4 +51,7 @@ def update_opt(model_opt):
     if not hasattr(model_opt, 'rnn_cell'):
         model_opt.rnn_cell = 'lstm'
     
+    if not hasattr(model_opt, 'share_projection'):
+        model_opt.share_projection = False
+    
     return model_opt

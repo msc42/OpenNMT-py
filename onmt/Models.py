@@ -472,7 +472,6 @@ class Generator(nn.Module):
         self.linear.switchID(tgtID)
 
     def hardSwitchID(self, tgtID):
-		
         self.linear.hardSwitchID(tgtID)
 
 
