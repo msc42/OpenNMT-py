@@ -48,7 +48,7 @@ def compute_score(score, samples, ref, tgtDict, batch_size, average=True):
 # Update the options for backward compatibility
 def update_opt(model_opt):
     
-    if hasattr(model_opt, 'rnn_cell'):
+    if not hasattr(model_opt, 'rnn_cell'):
         model_opt.rnn_cell = 'lstm'
     
     return model_opt
