@@ -32,14 +32,19 @@ class MultiWordEmbedding(nn.Module):
         assert idx >= 0 and idx < len(self.moduleList)
         self.currentID = idx
         
-    def hardSwitchID(self, idx):
-		
-		assert idx >= 0 and idx < len(self.moduleList)
-		self.currentID = idx
-                for i in range(0,len(self.moduleList)):
-                        if(i != self.currentID):
-                                print "Remove model:",i
-                                self.moduleList[i] = None
+    def hardSwitchID(self, idx, reset_zero=False):
+        
+        assert idx >= 0 and idx < len(self.moduleList)
+        self.currentID = idx
+        for i in range(0,len(self.moduleList)):
+            if(i != self.currentID):
+                print "Remove model:",i
+                self.moduleList[i] = None
+        
+        if reset_zero:
+            self.moduleList[0] = self.moduleList[self.currentID]
+            if self.currentID != 0 :
+                self.moduleList[self.currentID] = None
     
     def forward(self, input):
         
@@ -74,14 +79,19 @@ class MultiLinear(nn.Module):
         assert idx >= 0 and idx < len(self.moduleList)
         self.currentID = idx
         
-    def hardSwitchID(self, idx):
-	
-	assert idx >= 0 and idx < len(self.moduleList)
-	self.currentID = idx
+    def hardSwitchID(self, idx, reset_zero=False):
+    
+        assert idx >= 0 and idx < len(self.moduleList)
+        self.currentID = idx
         for i in range(0,len(self.moduleList)):
-              if(i != self.currentID):
-                    print "Remove model:",i
-                    self.moduleList[i] = None
+            if(i != self.currentID):
+                print "Remove model:",i
+                self.moduleList[i] = None
+                
+        if reset_zero:
+            self.moduleList[0] = self.moduleList[self.currentID]
+            if self.currentID != 0 :
+                self.moduleList[self.currentID] = None
 
     def forward(self, input):
     
@@ -150,3 +160,19 @@ class MultiModule(nn.Module):
         
     def current(self):
         return self.moduleList[self.currentID]
+    
+    def hardSwitchID(self, idx, reset_zero=False):
+        
+        if not self.share:
+    
+            assert idx >= 0 and idx < len(self.moduleList)
+            self.currentID = idx
+            for i in range(0,len(self.moduleList)):
+                if(i != self.currentID):
+                    print "Remove model:",i
+                    self.moduleList[i] = None
+                    
+            if reset_zero:
+                self.moduleList[0] = self.moduleList[self.currentID]
+                if self.currentID != 0 :
+                    self.moduleList[self.currentID] = None

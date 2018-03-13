@@ -130,8 +130,9 @@ class Dict(object):
         labels = []
 
         for i in idx:
-            labels += [self.getLabel(i)]
             if i == stop:
                 break
+            labels += [self.getLabel(i)]
+            
 
         return labels

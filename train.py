@@ -45,6 +45,8 @@ parser.add_argument('-adapt_src', default='',
                     help="""source language to adapt""")
 parser.add_argument('-adapt_tgt', default='',
                     help="""target language to adapt""")
+parser.add_argument('-adapt_id', default=-1,
+                    help="""specific language pair ID to adapt""")
 parser.add_argument('-override', action='store_true',
                     help="""Overwrite the save file to reduce space consumption""")
 parser.add_argument('-loading_strategy', default='all',
@@ -78,7 +80,7 @@ parser.add_argument('-batch_size', type=int, default=64,
                     help='Maximum batch size')
 parser.add_argument('-update_every', type=int, default=1,
                     help='Maximum batch size')
-parser.add_argument('-max_generator_batches', type=int, default=32,
+parser.add_argument('-max_generator_batches', type=int, default=2048,
                     help="""Maximum batches of words in a sequence to run
                     the generator on in parallel. Higher is faster, but uses
                     more memory.""")
@@ -207,10 +209,37 @@ def main():
     print("Loading dicts from '%s'" % opt.data + "/dicts_info.pt")
     dataset['dicts'] = torch.load(opt.data + "/dicts_info.pt")
     
+    pairIDs = list()
+    if len(opt.adapt_src) > 0 and len(opt.adapt_tgt) > 0:
+    
+        # find the source and target ID of the pair we need to adapt
+        srcID = dataset['dicts']['srcLangs'].index(opt.adapt_src)
+        tgtID = dataset['dicts']['tgtLangs'].index(opt.adapt_tgt)
+    
+        setIDs = dataset['dicts']['setIDs']
+        
+        # find the pair ID that we need to adapt
+        for i, sid in enumerate(setIDs):
+            if sid[0] == srcID and sid[1] == tgtID:
+                pairIDs.append(i)
+                
+        if len(pairIDs) == 0:
+            pairIDs = None
+    
+    else:
+        srcID = None
+        tgtID = None
+        pairIDs = None
+    
+    # convert string to IDs for easier manipulation
+    opt.adapt_src = srcID
+    opt.adapt_tgt = tgtID 
+    opt.pairIDs = pairIDs
+        
     
     dict_checkpoint = opt.train_from_state_dict
     if dict_checkpoint:
-        #~ print('Loading dicts from checkpoint at %s' % dict_checkpoint)
+        print('Loading dicts from checkpoint at %s' % dict_checkpoint)
         checkpoint = torch.load(dict_checkpoint, map_location=lambda storage, loc: storage)
         #~ dataset['dicts'] = checkpoint['dicts']
     else:
@@ -288,47 +317,11 @@ def main():
             lr_decay=opt.learning_rate_decay,
             start_decay_at=opt.start_decay_at
     )
-    
-    #~ optim.set_parameters(model.parameters())
-#~ 
-    #~ if opt.train_from_state_dict and opt.reset_optim == False:
-        #~ print("Loading optimizer state from checkpoint")
-        #~ optim.load_state_dict(checkpoint['optim'])
-
-    
-    #~ if opt.train_from_state_dict:
-        #~ del checkpoint # to save memory
 
     nParams = sum([p.nelement() for p in model.parameters()])
     print('[INFO] * number of parameters: %d' % nParams)
     
-    if len(opt.adapt_src) > 0 and len(opt.adapt_tgt) > 0:
     
-        # find the source and target ID of the pair we need to adapt
-        srcID = dataset['dicts']['srcLangs'].index(opt.adapt_src)
-        tgtID = dataset['dicts']['tgtLangs'].index(opt.adapt_tgt)
-    
-        setIDs = dataset['dicts']['setIDs']
-        
-        # find the pair ID that we need to adapt
-        pairID = -1
-        for i, sid in enumerate(setIDs):
-            if sid[0] == srcID and sid[1] == tgtID:
-                pairID = i
-                break
-                
-        if pairID == -1:
-            pairID = None
-    
-    else:
-        srcID = None
-        tgtID = None
-        pairID = None
-    
-    # convert string to IDs for easier manipulation
-    opt.adapt_src = srcID
-    opt.adapt_tgt = tgtID 
-    opt.pairID = pairID
     
     evaluator = Evaluator(model, dataset, opt, cuda=(len(opt.gpus) >= 1))
     

@@ -35,11 +35,11 @@ class Evaluator(object):
                                             cuda=self.cuda)
         self.adapt = False
         
-        if opt.adapt_src is not None and opt.adapt_tgt is not None and opt.pairID is not None:
+        if opt.adapt_src is not None and opt.adapt_tgt is not None and opt.pairIDs is not None:
             self.adapt = True
             self.adapt_src = opt.adapt_src
             self.adapt_tgt = opt.adapt_tgt
-            self.adapt_pair = opt.pairID
+            self.adapt_pairs = opt.pairIDs
             print("Adapting Mode ..... !")
             
         if opt.reinforce_metrics == 'gleu':
@@ -76,7 +76,7 @@ class Evaluator(object):
             
             if self.adapt:
                 # if we are adapting then we only care about that pair
-                if sid != self.adapt_pair:
+                if sid not in self.adapt_pairs:
                     continue
             
             dset = data[sid]
@@ -108,7 +108,7 @@ class Evaluator(object):
                 
                 total_words += targets.data.ne(onmt.Constants.PAD).sum()
             
-            normalized_loss = -total_loss / total_words
+            normalized_loss = -total_loss / (total_words + 1e-8)
             losses[sid] = math.exp(min(normalized_loss, 100))   
         
         model.train()
@@ -274,7 +274,7 @@ class Evaluator(object):
             total_hit_sentences[sid] = 0
             
             if self.adapt:
-                if sid != self.adapt_pair:
+                if sid not in self.adapt_pairs:
                     continue
             
             dset = data[sid]
@@ -301,6 +301,7 @@ class Evaluator(object):
                 
                 transposed_targets = targets.data.transpose(0, 1) # bsize x nwords
                 
+                # translate the source, return a list of predictions 
                 pred = self.translator.translate(src)
                 
                 bpe_string = bpe_token + bpe_token + " "
@@ -338,28 +339,9 @@ class Evaluator(object):
                             total_hits[sid] += hit
                             
                     total_scores[sid] += s[0] * 100 
-                #~ 
-                #~ if len(s) > 2:
-                    #~ gleu = s[1]
-                    #~ hit = s[2]
-                    #~ 
-                    #~ if hit >= 0:
-                        #~ total_hit_sentences += 1
-                        #~ total_hit += hit
-                #~ 
-                #~ if verbose:
-                    #~ sampledSent = " ".join(tgtWords)
-                    #~ refSent = " ".join(refWords)
-                    #~ 
-                    #~ if s[0] > 0:
-                        #~ print "SAMPLE :", sampledSent
-                        #~ print "   REF :", refSent
-                        #~ print "Score =", s
-#~ 
-                #~ # bleu is scaled by 100, probably because improvement by .01 is hard ?
-                #~ total_score += s[0] * 100 
+             
             
-            total_sentences[sid] += batch_size
+            #~ total_sentences[sid] += batch_size
                     
             # compute bleu using external script
             bleu = moses_multi_bleu(outF.name, outRef.name)

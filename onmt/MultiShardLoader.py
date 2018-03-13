@@ -38,9 +38,7 @@ class MultiShardLoader(object):
             for tfile in files:
                 if "train." in tfile:
                     train_files.append(tfile)
-                
-        #~ print(train_files)
-        
+                        
         self.train_files = train_files
         self.datasets = dict()
         
@@ -91,9 +89,25 @@ class MultiShardLoader(object):
             sampleDist[i] = len(self.datasets[i])
             self.set_iterators[i] = -1
             
+            if self.adapt:
+                if i not in self.adapt_pairs:
+                    sampleDist[i] = 0
+                    #~ del self.set_iterators[i]
+            
         # normalize the distribution 
-        sampleDist = sampleDist / torch.sum(sampleDist)
-        self.sampleDist = sampleDist
+        self.sampleDist = sampleDist / torch.sum(sampleDist)
+        
+        #~ print(self.sampleDist)
+        
+        self.sizes = dict()
+        
+        for i in self.datasets:
+            
+            self.sizes[i] = len(self.datasets[i])
+            
+            if self.adapt:
+                if i not in self.adapt_pairs:
+                    self.sizes[i] = 0
         self.nSamples = self.dataSizes()
         
         if batchOrder is None:
@@ -104,7 +118,9 @@ class MultiShardLoader(object):
         else:
             self.batchOrder = batchOrder
         
-        self.sizes = [len(self.datasets[i]) for i in self.datasets]
+        #~ self.sizes = [len(self.datasets[i]) for i in self.datasets]
+        
+            
     
     """ if we scan through the whole dataset """
     def finished(self):
@@ -116,34 +132,31 @@ class MultiShardLoader(object):
                 return False
         else:
             raise NotImplementedError
-    
-    #~ def random_set(self):
-        #~ 
-        #~ sampledSet = -1
-#~ 
-        #~ if self.adapt:
-            #~ sampledSet = self.adapt_pair
-        #~ else:
-            #~ # this loop is very dangerous 
-            #~ # because if the dataset is full then it will loop forever
-            #~ # need a mechanism to halt it
-            #~ while True:
-                #~ # if the sampled set is full then we re-sample 
-                #~ # to ensure that in one epoch we read each example once
-                #~ sampledSet = int(torch.multinomial(sampleDist, 1)[0])
-                #~ if iterators[sampledSet] + 1 < dataSizes[sampledSet]:
-                    #~ break        
+  
         
     """ return the size of the current shard """
     def dataSizes(self):
         
-        sizes = [len(self.datasets[i]) for i in self.datasets]
+        #~ sizes = [len(self.datasets[i]) for i in self.datasets]
+        #~ 
+        #~ if self.adapt:
+            #~ nSamples = sizes[self.adapt_pair]
+        #~ else:
+            #~ nSamples = sum(sizes)
+        if not hasattr(self, 'sizes'):
+            self.sizes = dict()
         
-        if self.adapt:
-            nSamples = sizes[self.adapt_pair]
-        else:
-            nSamples = sum(sizes)
+            for i in self.datasets:
+                
+                self.sizes[i] = len(self.datasets[i])
+                
+                if self.adapt:
+                    if i not in self.adapt_pairs:
+                        self.sizes[i] = 0
             
+        
+        nSamples = sum(self.sizes.values())
+        
         return nSamples
         
     def get_batch(self):
@@ -151,18 +164,24 @@ class MultiShardLoader(object):
         
         sampledSet = -1
 
-        if self.adapt:
-            sampledSet = self.adapt_pair
-        else:
-            # this loop is very dangerous 
-            # because if the dataset is full then it will loop forever
-            # need a mechanism to halt it
-            while True:
-                # if the sampled set is full then we re-sample 
-                # to ensure that in one epoch we read each example once
-                sampledSet = int(torch.multinomial(self.sampleDist, 1)[0])
-                if self.set_iterators[sampledSet] + 1 < self.sizes[sampledSet]:
-                    break
+        #~ if self.adapt:
+            #~ sampledSet = self.adapt_pair
+        #~ else:
+        
+        
+        # this loop is very dangerous 
+        # because if the dataset is full then it will loop forever
+        # need a mechanism to halt it
+        while True:
+            # if the sampled set is full then we re-sample 
+            # to ensure that in one epoch we read each example once
+            if self.finished():
+                break
+            
+            sampledSet = int(torch.multinomial(self.sampleDist, 1)[0])
+            if self.set_iterators[sampledSet] + 1 < self.sizes[sampledSet]:
+                break
+                
         
         if sampledSet > -1:
         

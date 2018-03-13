@@ -6,8 +6,10 @@ import torch
 import argparse
 import math
 import numpy
+from onmt.ModelConstructor import build_model as build
 
-parser = argparse.ArgumentParser(description='translate.py')
+
+parser = argparse.ArgumentParser(description='average_checkpoint.py')
 onmt.Markdown.add_md_help_argument(parser)
 
 parser.add_argument('-models', required=True,
@@ -18,13 +20,16 @@ parser.add_argument('-gpu', type=int, default=-1,
                     help="Device to run on")
                     
 def build_model(model_opt, model_state, generator_state, dicts, nSets, cuda):
-    encoder = onmt.Models.Encoder(model_opt, dicts['src'])
-    decoder = onmt.Models.Decoder(model_opt, dicts['tgt'], nSets)
-    this_model = onmt.Models.NMTModel(encoder, decoder)
-    generator = onmt.Models.Generator(model_opt, dicts['tgt'])
+    #~ encoder = onmt.Models.Encoder(model_opt, dicts['src'])
+    #~ decoder = onmt.Models.Decoder(model_opt, dicts['tgt'], nSets)
+    #~ this_model = onmt.Models.NMTModel(encoder, decoder)
+    #~ generator = onmt.Models.Generator(model_opt, dicts['tgt'])
+    this_model, generator = build(model_opt, dicts, nSets)
+    model_state_dict = {k: v for k, v in model_state.items() if 'critic' not in k}
+    
     
     # load weights
-    this_model.load_state_dict(model_state)
+    this_model.load_state_dict(model_state_dict)
     generator.load_state_dict(generator_state)
     
     # ship to cuda if necessary
@@ -50,7 +55,7 @@ def main():
     # opt.model should be a string of models, split by |
         
     models = opt.models.split("|")
-    #~ print(models)
+    
     n_models = len(models)
     
     print("Loading main model from %s ..." % models[0])

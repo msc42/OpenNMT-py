@@ -241,6 +241,7 @@ class Translator(object):
         #  (2) if a target is specified, compute the 'goldScore'
         #  (i.e. log likelihood) of the target under the model
         goldScores = contexts[0].data.new(batchSize).zero_()
+        goldWords = 0 
         
         # currently gold scoring is only supported when using single model decoding
         if tgtBatch is not None and self.n_models == 1:
@@ -268,6 +269,7 @@ class Translator(object):
                 scores = gen_t.data.gather(1, tgt_t)
                 scores.masked_fill_(tgt_t.eq(onmt.Constants.PAD), 0)
                 goldScores += scores
+                goldWords += (tgt_t.ne(onmt.Constants.PAD).sum())
 
         #  (3) run the decoder to generate sentences, using beam search
 
@@ -416,7 +418,7 @@ class Translator(object):
         
         mask(None)
 
-        return allHyp, allScores, allAttn, goldScores
+        return allHyp, allScores, allAttn, goldScores, goldWords
 
     def translate(self, srcBatch, goldBatch):
         #  (1) convert words to indexes
@@ -425,7 +427,7 @@ class Translator(object):
         batchSize = self._getBatchSize(src[0])
 
         #  (2) translate
-        pred, predScore, attn, goldScore = self.translateBatch(src, tgt)
+        pred, predScore, attn, goldScore, goldWords = self.translateBatch(src, tgt)
         pred, predScore, attn, goldScore = list(zip(
             *sorted(zip(pred, predScore, attn, goldScore, indices),
                     key=lambda x: x[-1])))[:-1]
@@ -438,4 +440,4 @@ class Translator(object):
                  for n in range(self.opt.n_best)]
             )
 
-        return predBatch, predScore, goldScore
+        return predBatch, predScore, goldScore, goldWords

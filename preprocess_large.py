@@ -206,15 +206,17 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts, src_seq_length=50, tgt_seq_le
 
     if opt.shuffle == 1:
         print('... shuffling sentences')
-        perm = torch.randperm(len(src))
+        if len(src) > 0 :
+            perm = torch.randperm(len(src))
+            src = [src[idx] for idx in perm]
+            tgt = [tgt[idx] for idx in perm]
+            sizes = [sizes[idx] for idx in perm]
+    
+    if len(src) > 0 :
+        print('... sorting sentences by size')
+        _, perm = torch.sort(torch.Tensor(sizes))
         src = [src[idx] for idx in perm]
         tgt = [tgt[idx] for idx in perm]
-        sizes = [sizes[idx] for idx in perm]
-
-    print('... sorting sentences by size')
-    _, perm = torch.sort(torch.Tensor(sizes))
-    src = [src[idx] for idx in perm]
-    tgt = [tgt[idx] for idx in perm]
 
     print(('Prepared %d sentences ' +
           '(%d ignored due to length == 0 or src len > %d or tgt len > %d)') %

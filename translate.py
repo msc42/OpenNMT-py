@@ -111,7 +111,7 @@ def main():
             if len(srcBatch) == 0:
                 break
 
-        predBatch, predScore, goldScore = translator.translate(srcBatch,
+        predBatch, predScore, goldScore, goldWords = translator.translate(srcBatch,
                                                                tgtBatch)
         
         if opt.normalize:
@@ -129,7 +129,7 @@ def main():
         predWordsTotal += sum(len(x[0]) for x in predBatch)
         if tgtF is not None:
             goldScoreTotal += sum(goldScore)
-            goldWordsTotal += sum(len(x) for x in tgtBatch)
+            goldWordsTotal += goldWords
             
 
         for b in range(len(predBatch)):

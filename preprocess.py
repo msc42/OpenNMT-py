@@ -3,8 +3,27 @@ import onmt.Markdown
 import argparse
 import torch
 import os.path
+import os
 from collections import OrderedDict
+import numpy as np
 
+
+def split(input, size):
+    
+    input_size = len(input)
+    slice_size = input_size / size
+    remain = input_size % size
+    result = []
+    iterator = iter(input)
+    for i in range(size):
+        result.append([])
+        for j in range(slice_size):
+            result[i].append(iterator.next())
+        if remain:
+            result[i].append(iterator.next())
+            remain -= 1
+    return result
+    
 
 parser = argparse.ArgumentParser(description='preprocess.py')
 onmt.Markdown.add_md_help_argument(parser)
@@ -15,9 +34,9 @@ parser.add_argument('-config',    help="Read options from this file")
 
 parser.add_argument('-src_type', default="text",
                     help="Type of the source input. Options are [text|img].")
-parser.add_argument('-load_from', default="",
-                    help="Load the preprocessed data.")
-
+parser.add_argument('-load_dict', help="Load the preprocessed dict info")
+parser.add_argument('-num_split', type=int, default=1,
+                    help="number of splits for the data")
 
 parser.add_argument('-train_src', required=True,
                     help="Path to the training source data")
@@ -68,6 +87,9 @@ parser.add_argument('-report_every', type=int, default=100000,
 opt = parser.parse_args()
 
 torch.manual_seed(opt.seed)
+
+# need to split the data into subsets
+# load and train subsets
 
 
 def makeVocabulary(filenames, size):
@@ -183,15 +205,17 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts, src_seq_length=50, tgt_seq_le
 
     if opt.shuffle == 1:
         print('... shuffling sentences')
-        perm = torch.randperm(len(src))
+        if len(src) > 0 :
+            perm = torch.randperm(len(src))
+            src = [src[idx] for idx in perm]
+            tgt = [tgt[idx] for idx in perm]
+            sizes = [sizes[idx] for idx in perm]
+    
+    if len(src) > 0 :
+        print('... sorting sentences by size')
+        _, perm = torch.sort(torch.Tensor(sizes))
         src = [src[idx] for idx in perm]
         tgt = [tgt[idx] for idx in perm]
-        sizes = [sizes[idx] for idx in perm]
-
-    print('... sorting sentences by size')
-    _, perm = torch.sort(torch.Tensor(sizes))
-    src = [src[idx] for idx in perm]
-    tgt = [tgt[idx] for idx in perm]
 
     print(('Prepared %d sentences ' +
           '(%d ignored due to length == 0 or src len > %d or tgt len > %d)') %
@@ -204,39 +228,58 @@ def makeData(srcFile, tgtFile, srcDicts, tgtDicts, src_seq_length=50, tgt_seq_le
 
 def main():
     
-    if len(opt.load_from) == 0:
-
-        dicts = {}
-        # First, we need to build the vocabularies
-        srcLangs = opt.src_langs.split("|")
-        tgtLangs = opt.tgt_langs.split("|")
+    ## Check if the directory already exist
+    if not os.path.exists(opt.save_data):
+        os.makedirs(opt.save_data)
         
-        srcFiles = opt.train_src.split("|")
-        tgtFiles = opt.train_tgt.split("|")
-        validSrcFiles = opt.valid_src.split("|")
-        validTgtFiles = opt.valid_tgt.split("|")
+    # First, we need to build the vocabularies
+    srcLangs = opt.src_langs.split("|")
+    tgtLangs = opt.tgt_langs.split("|")
+    
+    srcFiles = opt.train_src.split("|")
+    tgtFiles = opt.train_tgt.split("|")
+    validSrcFiles = opt.valid_src.split("|")
+    validTgtFiles = opt.valid_tgt.split("|")
+    
+    uniqSrcLangs = list(OrderedDict.fromkeys(srcLangs))
+    uniqTgtLangs = list(OrderedDict.fromkeys(tgtLangs))
+    
+    # Sanity checks
+    assert len(srcLangs) == len(tgtLangs)
+    assert len(srcLangs) == len(srcFiles)
+    assert len(srcFiles) == len(tgtFiles)
+    
+    # containers to contain the data
+    train_shards = list()
+    train = {}
+    
+    dicts = {}
+    train['src'] = list()
+    train['tgt'] = list()
+    dicts['setIDs'] = list()
+    dicts['setLangs'] = list()
+    
+    valid = {}
+    valid['src'] = list()
+    valid['tgt'] = list()
+    
+    langs = []
         
-        # Sanity checks
-        assert len(srcLangs) == len(tgtLangs)
-        assert len(srcLangs) == len(srcFiles)
-        assert len(srcFiles) == len(tgtFiles)
+    for lang in srcLangs + tgtLangs:
+        if not lang in langs:
+            langs.append(lang)
+    
+    if opt.load_dict is None:
         
-        langs = []
-        
-        for lang in srcLangs + tgtLangs:
-            if not lang in langs:
-                langs.append(lang)
         
         dicts['langs'] = langs
         dicts['vocabs'] = dict()
         dicts['nSets'] = len(srcLangs)
         
-        uniqSrcLangs = list(OrderedDict.fromkeys(srcLangs))
-        uniqTgtLangs = list(OrderedDict.fromkeys(tgtLangs))
+        
         
         dicts['srcLangs'] = uniqSrcLangs
         dicts['tgtLangs'] = uniqTgtLangs
-        #~ print(uniqSrcLangs, uniqTgtLangs)
         
         for lang in langs:
             if lang not in dicts['vocabs']:
@@ -248,7 +291,6 @@ def main():
                         dataFilesWithLang.append(tgtFiles[i])
                         
                 # We need to remove duplicate of this list 
-                
                 sortedDataFiles = list(OrderedDict.fromkeys(dataFilesWithLang))
                 dicts['vocabs'][lang] = initVocabulary(lang, sortedDataFiles, 
                                                                      opt.vocab, opt.vocab_size)
@@ -256,17 +298,7 @@ def main():
         # store the actual dictionaries for each side
         dicts['src'] = dict()
         dicts['tgt'] = dict()
-
-        train = {}
-        train['src'] = list()
-        train['tgt'] = list()
-        dicts['setIDs'] = list()
-        dicts['setLangs'] = list()
         
-        valid = {}
-        valid['src'] = list()
-        valid['tgt'] = list()
-
         for i in range(dicts['nSets']):
             
             dicts['setIDs'].append([uniqSrcLangs.index(srcLangs[i]), uniqTgtLangs.index(tgtLangs[i])])
@@ -298,42 +330,123 @@ def main():
        
         
         nPairs = len(srcLangs)
-                
+         
+        #~ print('Saving dictionaries to \'' + opt.save_data + '/dicts_info.pt\'...')
+        #~ torch.save(dicts, opt.save_data +  '/dicts_info.pt')
+    
+    else:
+        
+        newSrcLangs = srcLangs
+        newTgtLangs = tgtLangs
+        
+        
+        
+        print('Reading dicts from \'' + opt.load_dict + '\'...')
+        dicts = torch.load(opt.load_dict)
+        
         for i in range(dicts['nSets']):
-            srcDict = dicts['vocabs'][srcLangs[i]]
-            tgtDict = dicts['vocabs'][tgtLangs[i]]
+        #~ for i in range(len(srcFiles)):
+                    #~ 
+            #~ srcDict = dicts['vocabs'][srcLangs[i]]
+            #~ tgtDict = dicts['vocabs'][tgtLangs[i]]
+            
+            srcID = dicts['setIDs'][i][0]
+            tgtID = dicts['setIDs'][i][1]
+            
+            #~ setID = dicts['setIDs'].index([srcID, tgtID])
+            
+            srcLang = uniqSrcLangs[srcID]
+            tgtLang = uniqTgtLangs[tgtID]
+                        
+
+            
+            print('Preparing training ... for set %d ' % i)
+            data = makeData(srcFiles[i], tgtFiles[i], 
+                                      srcDict, tgtDict,
+                                      src_seq_length=opt.src_seq_length,
+                                      tgt_seq_length=opt.tgt_seq_length)
+            
+            srcSet = data[0]
+            tgtSet = data[1]                    
+                                
+            train['src'].append(srcSet)
+            train['tgt'].append(tgtSet)
+        
+        
+    print('Saving dictionaries to \'' + opt.save_data + '/dicts_info.pt\'...')
+    torch.save(dicts, opt.save_data +  '/dicts_info.pt')
+        
+    for i in range(dicts['nSets']):
+    #~ for i in range(len(validSrcFiles)):
+        srcDict = dicts['vocabs'][srcLangs[i]]
+        tgtDict = dicts['vocabs'][tgtLangs[i]]
+        
+        
+        srcID = dicts['srcLangs'].index(srcLangs[i])
+        tgtID = dicts['tgtLangs'].index(tgtLangs[i])
+        
+        setID = dicts['setIDs'].index([srcID, tgtID])
+        
+        print('Preparing validation ... for set %d ' % i)
+            
+        validSrcSet, validTgtSet = makeData(validSrcFiles[i], validTgtFiles[i],
+                                             srcDict, tgtDict,
+                                             src_seq_length=opt.src_seq_length + 256,
+                                             tgt_seq_length=opt.tgt_seq_length + 256)
+                                                                                                 
+        valid['src'].append(validSrcSet)
+        valid['tgt'].append(validTgtSet)
             
             
-            srcID = dicts['srcLangs'].index(srcLangs[i])
-            tgtID = dicts['tgtLangs'].index(tgtLangs[i])
+        if opt.vocab is None and opt.load_dict is None:
+            print('Saving vocabularies ... ')
+            for lang in langs:
+                saveVocabulary(lang, dicts['vocabs'][lang], opt.save_data + '/vocab.' + lang)
+            print('Done')
+    
+    print('Spliting and saving data tensors ... ')
+    split_shards = {}
+    split_shards['src'] = []
+    split_shards['tgt'] = []
+    
+    """ First we split all the tensor lists of language pairs """
+    for i in range(dicts['nSets']):
+        
+        src = train['src'][i]
+        tgt = train['tgt'][i]
+    
+        splitted_src = split(src, opt.num_split)
+        splitted_tgt = split(tgt, opt.num_split)
+        
+        split_shards['src'].append(splitted_src)
+        split_shards['tgt'].append(splitted_tgt)
+    
+    train_shards = list()
+    
+    for i in range(opt.num_split):
+        shard = dict()
+        
+        shard['src'] = list()
+        shard['tgt'] = list()
+        
+        """ for each language pair 
+            add the sub-shard to the shard
+        """
+        
+        for j in range(dicts['nSets']):
             
-            setID = dicts['setIDs'].index([srcID, tgtID])
+            shard['src'].append(split_shards['src'][j][i])
+            shard['tgt'].append(split_shards['tgt'][j][i])
             
-            print('Preparing validation ... for set %d ' % i)
-                
-            validSrcSet, validTgtSet = makeData(validSrcFiles[i], validTgtFiles[i],
-                                                 srcDict, tgtDict,
-                                                 src_seq_length=opt.src_seq_length + 256,
-                                                 tgt_seq_length=opt.tgt_seq_length + 256)
-                                                                                                     
-            valid['src'].append(validSrcSet)
-            valid['tgt'].append(validTgtSet)
-                
-                
-            if opt.vocab is None:
-                print('Saving vocabularies ... ')
-                for lang in langs:
-                    saveVocabulary(lang, dicts['vocabs'][lang], opt.save_data + '.dict.' + lang)
-                print('Done')
-            
-        print('Saving data to \'' + opt.save_data + '.train.pt\'...')
-        save_data = {'dicts': dicts,
-                     'type':  opt.src_type,
-                     'train': train,
-                     'valid': valid}
-            
-        torch.save(save_data, opt.save_data + '.train.pt')
-        print('Finished.')
+        train_shards.append(shard)
+        
+        print('Saving data shard to \'' + opt.save_data + '/train.pt.' + str(i))
+        torch.save(shard, opt.save_data + '/train.pt.' + str(i))
+    
+    print('Saving validation data to \'' + opt.save_data + '/valid.pt\'...')    
+    torch.save(valid, opt.save_data + '/valid.pt')
+    
+    print('Finished.')
 
 
 if __name__ == "__main__":

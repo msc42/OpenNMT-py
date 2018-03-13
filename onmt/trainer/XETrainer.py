@@ -60,16 +60,16 @@ class XETrainer(object):
         # A flag for language - specific adapting
         self.adapt = False
             
-        if opt.adapt_src is not None and opt.adapt_tgt is not None and opt.pairID is not None:
+        if opt.adapt_src is not None and opt.adapt_tgt is not None and opt.pairIDs is not None:
             self.adapt = True
         self.adapt_src = opt.adapt_src
         self.adapt_tgt = opt.adapt_tgt
-        self.adapt_pair = opt.pairID
+        self.adapt_pairs = opt.pairIDs
         
         self.trainLoader.adapt = self.adapt
         self.trainLoader.adapt_src = opt.adapt_src
         self.trainLoader.adapt_src = opt.adapt_tgt
-        self.trainLoader.adapt_src = opt.pairID
+        self.trainLoader.adapt_pairs = opt.pairIDs
         
         self.trainLoader.reset_iterators()
         self.num_updates = 0
@@ -195,14 +195,14 @@ class XETrainer(object):
                     
                     
                     bleu_scores = evaluator.eval_translate(validSets)
-                    for k in xrange(len(setIDs)):
-                        setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][k])
-                        print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[k]))
+                    for id in bleu_scores:
+                        setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
+                        print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[id]))
 
                     valid_ppl = evaluator.eval_perplexity(validSets, criterions, setIDs=setIDs)
-                    for k in xrange(len(setIDs)):
-                        setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][k])
-                        print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[k]))
+                    for id in valid_ppl:
+                        setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
+                        print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[id]))
 
                     
                     avgDevPpl = averagePPL(valid_ppl)
@@ -234,15 +234,16 @@ class XETrainer(object):
                     torch.save(checkpoint,
                          file_name
                          % (opt.save_model, avgDevPpl, self.num_updates ))
-            return [total_loss[j] / total_words[j] for j in xrange(len(setIDs))]
+            return [total_loss[j] / (total_words[j]+1e-6) for j in xrange(len(setIDs))]
             
         
         if checkpoint is not None:
             bleu_scores = evaluator.eval_translate(validSets)
-            for i in xrange(len(setIDs)):
-                setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
-                print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[i]))
-            
+
+            for id in bleu_scores:
+                setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
+                print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[id]))
+            #~ 
             if 'num_updates' in checkpoint:
                 self.num_updates = checkpoint['num_updates']
             else:
@@ -276,11 +277,13 @@ class XETrainer(object):
                 print('Validation perplexity for set %s : %g' % (setLangs, valid_ppl[id]))
             
             bleu_scores = evaluator.eval_translate(validSets)
-            for i in xrange(len(setIDs)):
-                setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][i])
-                print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[i]))
+            for id in bleu_scores:
+                setLangs = "-".join(lang for lang in dataset['dicts']['setLangs'][id])
+                print('Validation BLEU Scores for set %s : %g' % (setLangs, bleu_scores[id]))
 
             # learning rate is changed manually - or automatically
+            if optim.method == 'sgd' and optim.lr_decay < 1. :
+                optim.updateLearningRate(avgDevPpl, epoch)
 
             model_state_dict = (model.module.state_dict() if len(opt.gpus) > 1
                                 else model.state_dict())

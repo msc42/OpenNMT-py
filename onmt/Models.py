@@ -9,6 +9,7 @@ from onmt.modules.functional import to_one_hot
 import torch.nn.functional as F
 
 
+
 class Encoder(nn.Module):
 
     def __init__(self, opt, dicts):
@@ -46,14 +47,12 @@ class Encoder(nn.Module):
         self.word_lut.switchID(srcID)
         self.rnn.switchID(srcID)
 
-    def hardSwitchID(self, srcID):
-				
-        self.word_lut.hardSwitchID(srcID)
-        self.rnn.switchID(srcID)
-				
+    def hardSwitchID(self, srcID, reset_zero=False):
+        self.word_lut.hardSwitchID(srcID, reset_zero=reset_zero)
+        self.rnn.hardSwitchID(srcID, reset_zero=reset_zero)
+
     def switchPairID(self, srcID):
-                
-                return
+        return
 
 
 class StackedLSTM(nn.Module):
@@ -152,16 +151,20 @@ class Decoder(nn.Module):
         self.word_lut.switchID(tgtID)
         self.rnn.switchID(tgtID)
 
-    def hardSwitchID(self, tgtID):
+    def hardSwitchID(self, tgtID, reset_zero=False):
         
-        self.word_lut.hardSwitchID(tgtID)
-        self.rnn.switchID(tgtID)
-				
+        self.word_lut.hardSwitchID(tgtID, reset_zero=reset_zero)
+        self.rnn.hardSwitchID(tgtID, reset_zero=reset_zero)
+
+
     def switchPairID(self, pairID):
         
         self.attn.switchID(pairID)
         return
-
+    
+    
+    def hardSwitchPairID(self, pairID, reset_zero=False):
+        self.attn.hardSwitchID(pairID, reset_zero=False)
 
 class NMTModel(nn.Module):
 
@@ -386,15 +389,23 @@ class NMTModel(nn.Module):
         self.encoder.switchID(srcID)
         self.decoder.switchID(tgtID)
         self.generator.switchID(tgtID)
-    def hardSwitchLangID(self, srcID, tgtID):
+    def hardSwitchLangID(self, srcID, tgtID, reset_zero=False):
         
-        self.encoder.hardSwitchID(srcID)
-        self.decoder.hardSwitchID(tgtID)
-        self.generator.hardSwitchID(tgtID)
+        self.encoder.hardSwitchID(srcID, reset_zero=reset_zero)
+        self.decoder.hardSwitchID(tgtID, reset_zero=reset_zero)
+        self.generator.hardSwitchID(tgtID, reset_zero=reset_zero)
+        
+    def extractID(self, srcID, tgtID, pairID):
+        
+        self.encoder.hardSwitchID(srcID, reset_zero=True)
+        self.decoder.hardSwitchID(tgtID, reset_zero=True)
+        self.generator.hardSwitchID(tgtID, reset_zero=True)
 
     def switchPairID(self, pairID):
                 
         self.decoder.switchPairID(pairID)
+    def hardSwitchPairID(self, pairID, reset_zero=False):
+        self.decoder.hardSwitchPairID(pairID, reset_zero=reset_zero)
         
     # This function needs to look at the dict
     # If the dict at encoder and decoder has the same name -> tie them
@@ -471,8 +482,10 @@ class Generator(nn.Module):
         
         self.linear.switchID(tgtID)
 
-    def hardSwitchID(self, tgtID):
-        self.linear.hardSwitchID(tgtID)
+    def hardSwitchID(self, tgtID, reset_zero=False):
+        self.linear.hardSwitchID(tgtID, reset_zero=reset_zero)
+        
+    
 
 
 class NMTCriterion(object):

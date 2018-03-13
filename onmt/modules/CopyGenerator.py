@@ -103,6 +103,10 @@ class CopyGenerator(nn.Module):
         
         self.linear.switchID(tgtID)
         self.linear_copy.switchID(tgtID)
+        
+    def hardSwitchID(self, tgtID, reset_zero=False):
+        self.linear_copy.hardSwitchID(tgtID, reset_zero=reset_zero)
+        self.linear.hardSwitchID(tgtID, reset_zero=reset_zero)
     
     def forward(self, input, attn, src, return_log=True):
         
