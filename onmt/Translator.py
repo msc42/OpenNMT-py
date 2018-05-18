@@ -189,7 +189,7 @@ class Translator(object):
     def buildTargetTokens(self, pred, src, attn):
         tokens = self.tgt_dict.convertToLabels(pred, onmt.Constants.EOS)
         #~ tokens = tokens[:-1]  # EOS
-        if tokens[-1] == onmt.Constants.EOS_WORD:
+        if len(tokens) > 0 and tokens[-1] == onmt.Constants.EOS_WORD:
             tokens = tokens[:-1]  # EOS
         if self.opt.replace_unk:
             for i in range(len(tokens)):
