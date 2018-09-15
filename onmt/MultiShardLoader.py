@@ -79,13 +79,13 @@ class MultiShardLoader(object):
         self.shard_iterator = None ## for further manipulation with shards
         setIDs = self.setIDs
         # In order to make sets sample randomly,
-            # We create a distribution over the data size
-            # In the future we can manipulate this distribution 
-            # to create biased sampling when training
+        # We create a distribution over the data size
+        # In the future we can manipulate this distribution 
+        # to create biased sampling when training
         sampleDist = torch.Tensor(len(setIDs))
         self.set_iterators = dict()
         self.sample_iterator = -1
-        for i in xrange(len(self.dicts['setIDs'])):
+        for i in range(len(self.dicts['setIDs'])):
             sampleDist[i] = len(self.datasets[i])
             self.set_iterators[i] = -1
             

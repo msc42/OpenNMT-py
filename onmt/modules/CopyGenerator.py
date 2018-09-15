@@ -115,7 +115,9 @@ class CopyGenerator(nn.Module):
         attn = attn.view(-1, attn.size(-1))
         batch_by_tlen_, slen = attn.size()
         batch_size = src.size(1)
-        tlen = batch_by_tlen_ / batch_size
+        
+        # cast this to int 
+        tlen = int(batch_by_tlen_ / batch_size)
         
         
         # Compute the normal distribution by logits

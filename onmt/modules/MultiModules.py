@@ -38,7 +38,7 @@ class MultiWordEmbedding(nn.Module):
         self.currentID = idx
         for i in range(0,len(self.moduleList)):
             if(i != self.currentID):
-                print "Remove model:",i
+                print("Remove model:",i)
                 self.moduleList[i] = None
         
         if reset_zero:
@@ -66,7 +66,7 @@ class MultiLinear(nn.Module):
         self.moduleList = nn.ModuleList()
         
         
-        for i in xrange(len(self.inputSizes)):
+        for i in range(len(self.inputSizes)):
             
             linear = nn.Linear(inputSizes[i], outputSizes[i], bias=bias)
             self.moduleList.append(linear)
@@ -85,7 +85,7 @@ class MultiLinear(nn.Module):
         self.currentID = idx
         for i in range(0,len(self.moduleList)):
             if(i != self.currentID):
-                print "Remove model:",i
+                print("Remove model:",i)
                 self.moduleList[i] = None
                 
         if reset_zero:
@@ -169,7 +169,7 @@ class MultiModule(nn.Module):
             self.currentID = idx
             for i in range(0,len(self.moduleList)):
                 if(i != self.currentID):
-                    print "Remove model:",i
+                    print("Remove model:",i)
                     self.moduleList[i] = None
                     
             if reset_zero:

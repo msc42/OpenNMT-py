@@ -40,8 +40,8 @@ class Translator(object):
         
         for i, model in enumerate(models):
             if opt.verbose:
-                print('Loading model from %s' % opt.model)
-            checkpoint = torch.load(opt.model,
+                print('Loading model from %s' % model)
+            checkpoint = torch.load(model,
                                map_location=lambda storage, loc: storage)
         
             if opt.verbose:
@@ -189,7 +189,7 @@ class Translator(object):
     def buildTargetTokens(self, pred, src, attn):
         tokens = self.tgt_dict.convertToLabels(pred, onmt.Constants.EOS)
         #~ tokens = tokens[:-1]  # EOS
-        if tokens[-1] == onmt.Constants.EOS_WORD:
+        if len(tokens) > 0 and tokens[-1] == onmt.Constants.EOS_WORD:
             tokens = tokens[:-1]  # EOS
         if self.opt.replace_unk:
             for i in range(len(tokens)):
@@ -207,7 +207,7 @@ class Translator(object):
         beamSize = self.opt.beam_size
 
         #  (1) run the encoders on the src
-        for i in xrange(self.n_models):
+        for i in range(self.n_models):
             states, contexts[i] = self.models[i].encoder(srcBatch)
             
             # reshape the states
@@ -219,7 +219,7 @@ class Translator(object):
         batchSize = self._getBatchSize(srcBatch)
 
         rnnSizes = dict()
-        for i in xrange(self.n_models):
+        for i in range(self.n_models):
             rnnSizes[i] = contexts[i].size(2)
         
         #~ decoder = self.model.decoder
@@ -234,7 +234,7 @@ class Translator(object):
 
         def mask(padMask):
             if useMasking:
-                for i in xrange(self.n_models):
+                for i in range(self.n_models):
                     self.models[i].decoder.attn.current().applyMask(padMask)
                 #~ attentionLayer.applyMask(padMask)
 
@@ -277,7 +277,7 @@ class Translator(object):
         
         decStates = dict()
         
-        for i in xrange(self.n_models):
+        for i in range(self.n_models):
             contexts[i] = Variable(contexts[i].data.repeat(1, beamSize, 1))
         
             decStates[i] = (Variable(encStates[i][0].data.repeat(1, beamSize, 1)),
@@ -292,7 +292,7 @@ class Translator(object):
         decOuts = dict()
         attns = dict()
         outs = dict()
-        for i in xrange(self.n_models):
+        for i in range(self.n_models):
             decOuts[i] = self.models[i].make_init_decoder_output(contexts[i])
             
         src = Variable(srcBatch.data.repeat(1, beamSize)) # time x batch * beam
@@ -312,7 +312,7 @@ class Translator(object):
                                  if not b.done]).t().contiguous().view(1, -1)
                                  
             # compute new decoder output (distribution)
-            for i in xrange(self.n_models):
+            for i in range(self.n_models):
                 decOuts[i], decStates[i], attns[i] = self.models[i].decoder(
                     Variable(input, volatile=True), decStates[i], contexts[i], decOuts[i])
                 # decOut: 1 x (beam*batch) x numWords
@@ -345,7 +345,7 @@ class Translator(object):
                 if not beam[b].advance(wordLk.data[idx], attn.data[idx]):
                     active += [b]
                 
-                for i in xrange(self.n_models):
+                for i in range(self.n_models):
                     for decState in decStates[i]:  # iterate over h, c
                         # layers x beam*sent x dim
                         sentStates = decState.view(-1, beamSize,
@@ -371,7 +371,7 @@ class Translator(object):
                 return Variable(view.index_select(1, activeIdx)
                                 .view(*newSize), volatile=True)
             
-            for i in xrange(self.n_models):
+            for i in range(self.n_models):
                 decStates[i] = (updateActive(decStates[i][0], rnnSizes[i]),
                              updateActive(decStates[i][1], rnnSizes[i]))
                 decOuts[i] = updateActive(decOuts[i], rnnSizes[i])
@@ -440,4 +440,4 @@ class Translator(object):
                  for n in range(self.opt.n_best)]
             )
 
-        return predBatch, predScore, goldScore, goldWords
+        return predBatch, predScore, goldScore, goldWords, attn

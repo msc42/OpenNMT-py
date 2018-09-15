@@ -271,16 +271,13 @@ def main():
 
     trainSets = dict()
     validSets = dict()
-    for i in xrange(nSets):
+    for i in range(nSets):
         
         #~ trainSets[i] = onmt.Dataset(dataset['train']['src'][i], dataset['train']['tgt'][i],
                              #~ opt.batch_size, opt.gpus)
             
         validSets[i] = onmt.Dataset(valid_set['src'][i], valid_set['tgt'][i],
                              opt.batch_size, opt.gpus)
-
-        #~ print(' * number of training sentences for set %d: %d' %
-          #~ (i, len(dataset['train']['src'][i])))
         
 
     print('[INFO] * maximum batch size. %d' % opt.batch_size)

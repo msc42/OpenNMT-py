@@ -29,7 +29,7 @@ def compute_score(score, samples, ref, tgtDict, batch_size, average=True):
         
     s = torch.Tensor(batch_size)
     
-    for i in xrange(batch_size):
+    for i in range(batch_size):
         
         sampledIDs = sdata[i]
         refIDs = rdata[i]

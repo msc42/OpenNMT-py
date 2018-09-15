@@ -6,6 +6,7 @@ import torch
 import argparse
 import math
 import numpy
+import os
 
 parser = argparse.ArgumentParser(description='translate.py')
 onmt.Markdown.add_md_help_argument(parser)
@@ -57,7 +58,8 @@ parser.add_argument('-normalize', action='store_true',
                     help='To normalize the scores based on output length')
 parser.add_argument('-gpu', type=int, default=-1,
                     help="Device to run on")
-
+parser.add_argument('-plot_attention', action="store_true",
+                    help='Plot attention for decoded sequence')
 
 def reportScore(name, scoreTotal, wordsTotal):
     print("%s AVG SCORE: %.4f, %s PPL: %.4f" % (
@@ -69,6 +71,77 @@ def addone(f):
     for line in f:
         yield line
     yield None
+    
+def plotAttention(data, source, target, fname):
+    
+    import matplotlib.pyplot as plt # drawing heat map of attention weights
+    import matplotlib.ticker as ticker
+    #~ plt.rcParams['font.sans-serif']=['SimSun'] # set font family
+    
+    
+    
+    fig, ax = plt.subplots(figsize=(20, 8)) # set figure size
+    cax = ax.matshow(data, cmap=plt.cm.Blues)
+    fig.colorbar(cax)
+    #~ heatmap = ax.pcolor(data, cmap=plt.cm.Blues, alpha=0.9)
+    #~ 
+    X_label = [''] + [token.decode('utf-8') + "   " for token in source]
+    Y_label = [''] + [token.decode('utf-8') + "   " for token in target]
+    
+    ax.set_xticklabels(X_label, rotation=90)
+    ax.set_yticklabels(Y_label)
+    
+    # Show label at every tick
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
+    
+    ax.grid(True)
+    
+    file_name = fname + ".png"
+    #~ 
+    fig.savefig(file_name) 
+    print ("[INFO] Saving attention heatmap to %s" % file_name)
+    plt.close(fig)    # close the figure
+    
+# attn should have size n_target * n_source
+def printAttention(attns, srcBatch, predBatch, basename, baseID, directory="temp/"):
+    
+    if not os.path.exists(directory + basename):
+        os.makedirs(directory + basename)
+    
+    sentID = baseID
+    for attnBeams, srcSent, predBeams in zip(attns, srcBatch, predBatch):
+        
+        sentID += 1 
+        # only get attn and pred from top of the beam
+        attn = attnBeams[0]
+        pred = predBeams[0]# list of target words 
+        n_target = attn.size(0)
+        src = srcSent # list of source words
+        
+        # because EOS is trimmed when convert from id to word
+        # so we might want to restore it for displaying
+        if len(pred) == n_target - 1:
+            pred = pred + [onmt.Constants.EOS_WORD]
+        
+        # sanity check
+        c1 = (len(pred) == attn.size(0))
+        c2 = (len(src) == attn.size(1))
+        
+        if not (c1 and c2):
+            continue
+                
+        # checking if the sum of attention must be 1.00
+        sum_row = float("{0:.2f}".format(torch.sum(attn[0])))
+        assert sum_row== 1.00, "Attention weights for one target token w.r.t context must sum to 1.00, currently is %.2f" % sum_row
+        
+        # convert this crap to numpy
+        data = attn.cpu().numpy()
+        
+        fname = directory + basename + "/" + str(sentID)
+        
+        # plot the attention
+        plotAttention(data, src, pred, fname)
 
 
 def main():
@@ -79,8 +152,19 @@ def main():
     
     # Always pick n_best
     opt.n_best = opt.beam_size
+    
+    if opt.plot_attention:
+        try:
+            import matplotlib   
+            matplotlib.use('Agg') # Must be before importing matplotlib.pyplot or pylab! 
+        except ImportError:
+            print("[ERROR] Matplotlib is required to plot attention maps")
+            return
         
     translator = onmt.Translator(opt)
+    
+    # for graph plotting
+    basename = opt.output + ".attn"
 
     outF = open(opt.output, 'w')
 
@@ -111,7 +195,7 @@ def main():
             if len(srcBatch) == 0:
                 break
 
-        predBatch, predScore, goldScore, goldWords = translator.translate(srcBatch,
+        predBatch, predScore, goldScore, goldWords, attn = translator.translate(srcBatch,
                                                                tgtBatch)
         
         if opt.normalize:
@@ -130,6 +214,10 @@ def main():
         if tgtF is not None:
             goldScoreTotal += sum(goldScore)
             goldWordsTotal += goldWords
+            
+        # plot the attention heat map if needed
+        if opt.plot_attention:
+            printAttention(attn, srcBatch, predBatch, basename, count)
             
 
         for b in range(len(predBatch)):

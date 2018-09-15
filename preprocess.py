@@ -18,9 +18,9 @@ def split(input, size):
     for i in range(size):
         result.append([])
         for j in range(slice_size):
-            result[i].append(iterator.next())
+            result[i].append(next(iterator))
         if remain:
-            result[i].append(iterator.next())
+            result[i].append(next(iterator))
             remain -= 1
     return result
     
@@ -275,8 +275,6 @@ def main():
         dicts['langs'] = langs
         dicts['vocabs'] = dict()
         dicts['nSets'] = len(srcLangs)
-        
-        
         
         dicts['srcLangs'] = uniqSrcLangs
         dicts['tgtLangs'] = uniqTgtLangs

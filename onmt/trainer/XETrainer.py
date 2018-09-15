@@ -180,7 +180,7 @@ class XETrainer(object):
                                      optim.get_learning_rate(),
                                      str(datetime.timedelta(seconds=int(time.time() - start_time)))))
                                      
-                    for j in xrange(len(setIDs)):
+                    for j in range(len(setIDs)):
                         
                         report_loss[j] = 0
                         report_tgt_words[j] = 0
@@ -234,7 +234,7 @@ class XETrainer(object):
                     torch.save(checkpoint,
                          file_name
                          % (opt.save_model, avgDevPpl, self.num_updates ))
-            return [total_loss[j] / (total_words[j]+1e-6) for j in xrange(len(setIDs))]
+            return [total_loss[j] / (total_words[j]+1e-6) for j in range(len(setIDs))]
             
         
         if checkpoint is not None:
@@ -266,7 +266,7 @@ class XETrainer(object):
             #  (1) train for one epoch on the training set
             train_losses = trainEpoch(epoch)
             train_ppl = [math.exp(min(train_loss, 100)) for train_loss in train_losses]
-            for i in xrange(len(setIDs)):
+            for i in range(len(setIDs)):
                 print('Training perplexity for set %d : %g' % (i, train_ppl[i]))
 
             #  (2) evaluate on the validation set

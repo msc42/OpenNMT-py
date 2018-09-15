@@ -243,7 +243,7 @@ class NMTModel(nn.Module):
         states = []
         
         
-        for t in xrange(max_length):
+        for t in range(max_length):
             # make a forward pass through the decoder
             state, hidden, attn_t = self.decoder(input_t, hidden, context, state)
             

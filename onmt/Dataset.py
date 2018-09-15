@@ -43,7 +43,7 @@ class Dataset(object):
         cur_batch = []
         cur_batch_length = -99
         
-        for i in xrange(self.fullSize):
+        for i in range(self.fullSize):
             cur_length = self.src[i].size(0)
             # if the current batch's length is different
             # the we create 
