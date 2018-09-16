@@ -277,7 +277,7 @@ def main():
                              #~ opt.batch_size, opt.gpus)
             
         validSets[i] = onmt.Dataset(valid_set['src'][i], valid_set['tgt'][i],
-                             opt.batch_size, opt.gpus)
+                             opt.batch_size, opt.gpus, volatile=True)
         
 
     print('[INFO] * maximum batch size. %d' % opt.batch_size)
