@@ -323,9 +323,9 @@ class Evaluator(object):
                     
                     
                     # Flush the pred and reference sentences to temp files 
-                    outF.write(decodedSent + "\n")
+                    outF.write((decodedSent + "\n").encode())
                     outF.flush()
-                    outRef.write(refSent + "\n")
+                    outRef.write((refSent + "\n").encode())
                     outRef.flush()
                     
                     s = self.score(refWordList, predWordList)

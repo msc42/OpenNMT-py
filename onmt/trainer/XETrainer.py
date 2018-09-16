@@ -84,7 +84,7 @@ class XETrainer(object):
             print("[INFO] Loading optimizer state from checkpoint")
             self.optim.load_state_dict(checkpoint['optim'])
         
-        print(self.model)
+        # print(self.model)
         self.model.train()
         opt = self.opt
         #~ trainSets = self.trainSets
